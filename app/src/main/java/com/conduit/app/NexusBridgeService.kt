@@ -4,6 +4,7 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.*
+import android.os.Message as OsMessage
 import android.util.Log
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
@@ -89,7 +90,7 @@ class NexusBridgeService : Service() {
 
     private fun sendChunk(replyTo: Messenger, execId: String, chunk: String) {
         try {
-            val msg = Message.obtain(null, MSG_STREAM_OUTPUT).apply {
+            val msg = OsMessage.obtain(null, MSG_STREAM_OUTPUT).apply {
                 data = Bundle().apply {
                     putString(KEY_EXEC_ID, execId)
                     putString(KEY_OUTPUT_CHUNK, chunk)
@@ -103,7 +104,7 @@ class NexusBridgeService : Service() {
 
     private fun sendSuccess(replyTo: Messenger, execId: String, result: String) {
         try {
-            val msg = Message.obtain(null, MSG_EXECUTION_SUCCESS).apply {
+            val msg = OsMessage.obtain(null, MSG_EXECUTION_SUCCESS).apply {
                 data = Bundle().apply {
                     putString(KEY_EXEC_ID, execId)
                     putString(KEY_FINAL_RESULT, result)
@@ -117,7 +118,7 @@ class NexusBridgeService : Service() {
 
     private fun sendError(replyTo: Messenger, execId: String, error: String) {
         try {
-            val msg = Message.obtain(null, MSG_EXECUTION_ERROR).apply {
+            val msg = OsMessage.obtain(null, MSG_EXECUTION_ERROR).apply {
                 data = Bundle().apply {
                     putString(KEY_EXEC_ID, execId)
                     putString(KEY_ERROR_MESSAGE, error)
@@ -140,7 +141,7 @@ class NexusBridgeService : Service() {
         private val onExecute: (code: String, execId: String, replyTo: Messenger) -> Unit
     ) : Handler(Looper.getMainLooper()) {
 
-        override fun handleMessage(msg: Message) {
+        override fun handleMessage(msg: OsMessage) {
             when (msg.what) {
                 MSG_EXECUTE_CODE -> {
                     val bundle = msg.data ?: return
