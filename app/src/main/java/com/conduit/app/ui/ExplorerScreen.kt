@@ -210,8 +210,17 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                         isHighlighted = selectedFiles.contains(file),
                         isPinned = viewModel.pinnedPaths.contains(file.path),
                         onClick = {
-                            if (selectedFiles.isNotEmpty()) viewModel.toggleSelection(file) 
-                            else viewModel.onFileClicked(file, context, loadFolder)
+                            if (viewModel.isPickerMode) {
+                                if (viewModel.pickerAllowMultiple) {
+                                    viewModel.toggleSelection(file)
+                                } else {
+                                    viewModel.finishPicking(context, listOf(file))
+                                }
+                            } else if (selectedFiles.isNotEmpty()) {
+                                viewModel.toggleSelection(file) 
+                            } else {
+                                viewModel.onFileClicked(file, context, loadFolder)
+                            }
                         },
                         onLongClick = { viewModel.toggleSelection(file) }
                     )
