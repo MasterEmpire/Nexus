@@ -47,13 +47,21 @@ class MainActivity : ComponentActivity() {
         if (isPicker) {
             val allowMultiple = inIntent.getBooleanExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
             val mime = inIntent.type ?: "*/*"
+            val initialPath = inIntent.getStringExtra("extra_initial_path")
+
             viewModel.currentView = "explorer"
             viewModel.selectedTab = 1
             viewModel.isPickerMode = true
             viewModel.pickerAllowMultiple = allowMultiple
             viewModel.pickerMimeFilter = mime
-            if (viewModel.explorerCategory == null) {
+
+            if (!initialPath.isNullOrEmpty() && java.io.File(initialPath).exists()) {
                 viewModel.explorerCategory = "Internal Storage"
+                viewModel.explorerPath = initialPath
+                viewModel.loadExplorerFolder(initialPath, this)
+            } else {
+                viewModel.explorerCategory = null
+                viewModel.refreshDashboard(this)
             }
         }
     }
@@ -73,11 +81,10 @@ class MainActivity : ComponentActivity() {
             exitProcess(1)
         }
         super.onCreate(savedInstanceState)
-        handlePickerIntent(intent)
-        
         if (!Python.isStarted()) {
             Python.start(AndroidPlatform(this))
         }
+        handlePickerIntent(intent)
         viewModel.loadQuickPills(this)
         viewModel.loadPinnedPaths(this)
         viewModel.loadFolderCache(this)
