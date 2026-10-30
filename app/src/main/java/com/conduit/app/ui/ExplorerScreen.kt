@@ -349,8 +349,20 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                                     isHighlighted = selectedFiles.contains(file) || file.path == viewModel.highlightedPath,
                                     isPinned = viewModel.pinnedPaths.contains(file.path),
                                     onClick = {
-                                        if (selectedFiles.isNotEmpty()) viewModel.toggleSelection(file) 
-                                        else viewModel.onFileClicked(file, context, loadFolder)
+                                        if (viewModel.isPickerMode) {
+                                            val isDir = java.io.File(file.path).isDirectory || file.path.contains("!/")
+                                            if (isDir) {
+                                                viewModel.onFileClicked(file, context, loadFolder)
+                                            } else if (viewModel.pickerAllowMultiple) {
+                                                viewModel.toggleSelection(file)
+                                            } else {
+                                                viewModel.finishPicking(context, listOf(file))
+                                            }
+                                        } else if (selectedFiles.isNotEmpty()) {
+                                            viewModel.toggleSelection(file) 
+                                        } else {
+                                            viewModel.onFileClicked(file, context, loadFolder)
+                                        }
                                     },
                                     onLongClick = { viewModel.toggleSelection(file) }
                                 )
@@ -511,8 +523,21 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(horizontal = 8.dp)
                     )
+                    if (viewModel.isPickerMode) {
+                        Button(
+                            onClick = { viewModel.finishPicking(context, selectedFiles.toList()) },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF)),
+                            shape = RoundedCornerShape(16.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.AttachFile, null, tint = Color.Black, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Attach (${selectedFiles.size})", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                    }
+
                     val hasZip = selectedFiles.any { it.path.endsWith(".zip") || it.path.contains("!/") }
-                    if (hasZip) {
+                    if (hasZip && !viewModel.isPickerMode) {
                         IconButton(onClick = { viewModel.prepareExtraction() }) {
                             Icon(Icons.Default.Unarchive, "Extract", tint = Color(0xFF69F0AE))
                         }
