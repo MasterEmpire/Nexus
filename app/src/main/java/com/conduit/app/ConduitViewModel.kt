@@ -146,6 +146,11 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
             return
         }
 
+        val parentPath = try {
+            val f = File(files.first().path)
+            if (f.isDirectory) f.absolutePath else f.parent ?: "/storage/emulated/0"
+        } catch (_: Exception) { "/storage/emulated/0" }
+
         val resultIntent = Intent().apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             data = uris.first()
@@ -154,6 +159,7 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                 clipData.addItem(android.content.ClipData.Item(uris[i]))
             }
             setClipData(clipData)
+            putExtra("extra_parent_path", parentPath)
         }
         act.setResult(android.app.Activity.RESULT_OK, resultIntent)
         act.finish()
