@@ -30,6 +30,34 @@ class MainActivity : ComponentActivity() {
     }
     private val viewModel: ConduitViewModel by viewModels()
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handlePickerIntent(intent)
+    }
+
+    private fun handlePickerIntent(inIntent: Intent?) {
+        if (inIntent == null) return
+        val action = inIntent.action
+        val isPicker = inIntent.getBooleanExtra("extra_picker_mode", false) ||
+            action == Intent.ACTION_GET_CONTENT ||
+            action == Intent.ACTION_OPEN_DOCUMENT ||
+            action == "com.conduit.nexus.action.PICK_FILE"
+
+        if (isPicker) {
+            val allowMultiple = inIntent.getBooleanExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
+            val mime = inIntent.type ?: "*/*"
+            viewModel.currentView = "explorer"
+            viewModel.selectedTab = 1
+            viewModel.isPickerMode = true
+            viewModel.pickerAllowMultiple = allowMultiple
+            viewModel.pickerMimeFilter = mime
+            if (viewModel.explorerCategory == null) {
+                viewModel.explorerCategory = "Internal Storage"
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // Request Notification Permission
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
@@ -45,6 +73,7 @@ class MainActivity : ComponentActivity() {
             exitProcess(1)
         }
         super.onCreate(savedInstanceState)
+        handlePickerIntent(intent)
         
         if (!Python.isStarted()) {
             Python.start(AndroidPlatform(this))
