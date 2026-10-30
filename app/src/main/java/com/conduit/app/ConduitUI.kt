@@ -54,9 +54,11 @@ fun ConduitIDE(viewModel: ConduitViewModel) {
     var terminalOutput by remember { mutableStateOf("Python ${System.getProperty("os.version")} REPL\n>>> ") }
     var terminalInput by remember { mutableStateOf("") }
 
-    BackHandler(enabled = viewModel.currentView != "chat" || drawerState.isOpen) {
+    BackHandler(enabled = viewModel.currentView != "chat" || drawerState.isOpen || viewModel.isPickerMode) {
         if (drawerState.isOpen) {
             scope.launch { drawerState.close() }
+        } else if (viewModel.isPickerMode) {
+            viewModel.cancelPicking(context)
         } else {
             viewModel.currentView = "chat"
             viewModel.selectedTab = 0
