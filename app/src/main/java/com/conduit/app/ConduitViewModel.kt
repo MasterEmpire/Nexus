@@ -121,6 +121,50 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
     var isExtractionMode by mutableStateOf(savedStateHandle.get<Boolean>("isExtractionMode") ?: false)
         private set
 
+    var isPickerMode by mutableStateOf(savedStateHandle.get<Boolean>("isPickerMode") ?: false)
+    var pickerAllowMultiple by mutableStateOf(savedStateHandle.get<Boolean>("pickerAllowMultiple") ?: false)
+    var pickerMimeFilter by mutableStateOf(savedStateHandle.get<String>("pickerMimeFilter") ?: "*/*")
+
+    fun finishPicking(context: android.content.Context, files: List<FileItem>) {
+        val act = context as? android.app.Activity ?: return
+        if (files.isEmpty()) {
+            cancelPicking(context)
+            return
+        }
+
+        val uris = files.mapNotNull { item ->
+            try {
+                val f = File(item.path)
+                if (f.exists() && f.isFile) {
+                    androidx.core.content.FileProvider.getUriForFile(context, "com.conduit.nexus.provider", f)
+                } else null
+            } catch (_: Exception) { null }
+        }
+
+        if (uris.isEmpty()) {
+            cancelPicking(context)
+            return
+        }
+
+        val resultIntent = Intent().apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            data = uris.first()
+            val clipData = android.content.ClipData.newUri(context.contentResolver, "Selected Files", uris.first())
+            for (i in 1 until uris.size) {
+                clipData.addItem(android.content.ClipData.Item(uris[i]))
+            }
+            setClipData(clipData)
+        }
+        act.setResult(android.app.Activity.RESULT_OK, resultIntent)
+        act.finish()
+    }
+
+    fun cancelPicking(context: android.content.Context) {
+        val act = context as? android.app.Activity ?: return
+        act.setResult(android.app.Activity.RESULT_CANCELED)
+        act.finish()
+    }
+
     var executionProfile by mutableStateOf("Standard")
         private set
 
