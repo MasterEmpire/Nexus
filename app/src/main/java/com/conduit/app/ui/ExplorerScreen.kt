@@ -18,6 +18,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,6 +53,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.core.content.FileProvider
 import androidx.activity.compose.BackHandler
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ExplorerScreen(viewModel: ConduitViewModel) {
     val context = LocalContext.current
@@ -118,6 +122,32 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
     val loadFolder = { path: String -> viewModel.loadExplorerFolder(path, context) }
     val openCategory = { cat: String -> viewModel.openExplorerCategory(context, cat) }
 
+    val dashboardPullState = rememberPullToRefreshState()
+    if (dashboardPullState.isRefreshing) {
+        LaunchedEffect(true) {
+            viewModel.refreshDashboard(context)
+            dashboardPullState.endRefresh()
+        }
+    }
+
+    val folderPullState = rememberPullToRefreshState()
+    if (folderPullState.isRefreshing) {
+        LaunchedEffect(true) {
+            if (currentCategory == "Internal Storage") {
+                loadFolder(viewModel.explorerPath)
+            } else if (currentCategory == "Search Results" && viewModel.searchQuery.isNotBlank()) {
+                val target = if (viewModel.explorerPath != "/storage/emulated/0") viewModel.explorerPath else null
+                val results = withContext(Dispatchers.IO) {
+                    FileScanner.searchFilesNative(context, viewModel.searchQuery, target)
+                }
+                viewModel.explorerFiles = results.sortedByDescending { it.path in viewModel.pinnedPaths }
+            } else if (currentCategory != null) {
+                openCategory(currentCategory)
+            }
+            folderPullState.endRefresh()
+        }
+    }
+
     val handleBackNavigation = {
         viewModel.isSearching = false
         val retCat = viewModel.explorerReturnCategory
@@ -173,59 +203,73 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                 )
             }
 
-            LazyColumn(modifier = Modifier.weight(1f)) {
-                item { Spacer(modifier = Modifier.height(8.dp)) }
-                
-                // Storage Card
-                item {
-                    StorageUsageCard(
-                        label = viewModel.storageLabel, 
-                        percent = viewModel.storagePercent,
-                        onClick = { openCategory("Internal Storage") }
-                    )
-                }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .nestedScroll(dashboardPullState.nestedScrollConnection)
+            ) {
+                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    item { Spacer(modifier = Modifier.height(8.dp)) }
+                    
+                    // Storage Card
+                    item {
+                        StorageUsageCard(
+                            label = viewModel.storageLabel, 
+                            percent = viewModel.storagePercent,
+                            onClick = { openCategory("Internal Storage") }
+                        )
+                    }
 
-                item { Spacer(modifier = Modifier.height(16.dp)) }
+                    item { Spacer(modifier = Modifier.height(16.dp)) }
 
-                // Category Grid
-                item {
-                    CategoryGrid(onCatClick = { openCategory(it) })
-                }
+                    // Category Grid
+                    item {
+                        CategoryGrid(onCatClick = { openCategory(it) })
+                    }
 
-                item { Spacer(modifier = Modifier.height(16.dp)) }
+                    item { Spacer(modifier = Modifier.height(16.dp)) }
 
-                // Recent Files Section
-                item {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("Recent Files", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                        TextButton(onClick = { openCategory("Recent Files") }) {
-                            Text("View All", color = Color(0xFF00E5FF), style = MaterialTheme.typography.labelSmall)
+                    // Recent Files Section
+                    item {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Recent Files", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            TextButton(onClick = { openCategory("Recent Files") }) {
+                                Text("View All", color = Color(0xFF00E5FF), style = MaterialTheme.typography.labelSmall)
+                            }
                         }
+                    }
+
+                    items(viewModel.dashboardRecentFiles) { file ->
+                        FileRow(
+                            file = file, 
+                            isHighlighted = selectedFiles.contains(file),
+                            isPinned = viewModel.pinnedPaths.contains(file.path),
+                            onClick = {
+                                if (viewModel.isPickerMode) {
+                                    if (viewModel.pickerAllowMultiple) {
+                                        viewModel.toggleSelection(file)
+                                    } else {
+                                        viewModel.finishPicking(context, listOf(file))
+                                    }
+                                } else if (selectedFiles.isNotEmpty()) {
+                                    viewModel.toggleSelection(file) 
+                                } else {
+                                    viewModel.onFileClicked(file, context, loadFolder)
+                                }
+                            },
+                            onLongClick = { viewModel.toggleSelection(file) }
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
                     }
                 }
 
-                items(viewModel.dashboardRecentFiles) { file ->
-                    FileRow(
-                        file = file, 
-                        isHighlighted = selectedFiles.contains(file),
-                        isPinned = viewModel.pinnedPaths.contains(file.path),
-                        onClick = {
-                            if (viewModel.isPickerMode) {
-                                if (viewModel.pickerAllowMultiple) {
-                                    viewModel.toggleSelection(file)
-                                } else {
-                                    viewModel.finishPicking(context, listOf(file))
-                                }
-                            } else if (selectedFiles.isNotEmpty()) {
-                                viewModel.toggleSelection(file) 
-                            } else {
-                                viewModel.onFileClicked(file, context, loadFolder)
-                            }
-                        },
-                        onLongClick = { viewModel.toggleSelection(file) }
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                }
+                PullToRefreshContainer(
+                    state = dashboardPullState,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                    containerColor = Color(0xFF161B22),
+                    contentColor = Color(0xFF00E5FF)
+                )
             }
         }
 
@@ -318,123 +362,141 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                         }
                     }
                     
-                    if (isScanning) {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = Color(0xFF00E5FF))
-                        }
-                    } else if (viewModel.explorerFiles.isEmpty()) {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    Icons.Default.FolderOpen, 
-                                    null, 
-                                    modifier = Modifier.size(64.dp), 
-                                    tint = Color.Gray.copy(alpha = 0.5f)
-                                )
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Text(
-                                    "No one is home.", 
-                                    style = MaterialTheme.typography.titleMedium, 
-                                    color = Color.Gray
-                                )
-                                Text(
-                                    "This folder is empty or no files match.", 
-                                    style = MaterialTheme.typography.bodySmall, 
-                                    color = Color.Gray.copy(alpha = 0.7f)
-                                )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .nestedScroll(folderPullState.nestedScrollConnection)
+                    ) {
+                        if (isScanning && !folderPullState.isRefreshing) {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(color = Color(0xFF00E5FF))
                             }
-                        }
-                    } else {
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            var isDraggingScroll by remember { mutableStateOf(false) }
-                            
-                            LazyColumn(
-                                modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 4.dp), 
-                                state = listState
+                        } else if (viewModel.explorerFiles.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(rememberScrollState()), 
+                                contentAlignment = Alignment.Center
                             ) {
-                                items(viewModel.explorerFiles) { file ->
-                                FileRow(
-                                    file = file, 
-                                    isHighlighted = selectedFiles.contains(file) || file.path == viewModel.highlightedPath,
-                                    isPinned = viewModel.pinnedPaths.contains(file.path),
-                                    onClick = {
-                                        if (viewModel.isPickerMode) {
-                                            val isDir = java.io.File(file.path).isDirectory || file.path.contains("!/")
-                                            if (isDir) {
-                                                viewModel.onFileClicked(file, context, loadFolder)
-                                            } else if (viewModel.pickerAllowMultiple) {
-                                                viewModel.toggleSelection(file)
-                                            } else {
-                                                viewModel.finishPicking(context, listOf(file))
-                                            }
-                                        } else if (selectedFiles.isNotEmpty()) {
-                                            viewModel.toggleSelection(file) 
-                                        } else {
-                                            viewModel.onFileClicked(file, context, loadFolder)
-                                        }
-                                    },
-                                    onLongClick = { viewModel.toggleSelection(file) }
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(
+                                        Icons.Default.FolderOpen, 
+                                        null, 
+                                        modifier = Modifier.size(64.dp), 
+                                        tint = Color.Gray.copy(alpha = 0.5f)
+                                    )
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Text(
+                                        "No one is home.", 
+                                        style = MaterialTheme.typography.titleMedium, 
+                                        color = Color.Gray
+                                    )
+                                    Text(
+                                        "This folder is empty or no files match.", 
+                                        style = MaterialTheme.typography.bodySmall, 
+                                        color = Color.Gray.copy(alpha = 0.7f)
+                                    )
+                                }
                             }
-                        }
-
-                        // Explorer Fast-Scroll Handle
-                        if (viewModel.explorerFiles.size > 20) {
-                                BoxWithConstraints(modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().width(40.dp)) {
-                                    var showScrollbar by remember { mutableStateOf(false) }
-                                    var dragScrollPercent by remember { mutableFloatStateOf(0f) }
-                                    
-                                    LaunchedEffect(listState.isScrollInProgress, isDraggingScroll) {
-                                        if (listState.isScrollInProgress || isDraggingScroll) {
-                                            showScrollbar = true
-                                        } else {
-                                            kotlinx.coroutines.delay(1500)
-                                            showScrollbar = false
-                                        }
-                                    }
-                                    val scrollAlpha by animateFloatAsState(if (showScrollbar) 1f else 0f, label = "")
-                                    val totalItems = viewModel.explorerFiles.size
-                                    val maxScrollIndex = (totalItems - listState.layoutInfo.visibleItemsInfo.size).coerceAtLeast(1)
-                                    val listScrollPercent = (listState.firstVisibleItemIndex.toFloat() / maxScrollIndex.toFloat()).coerceIn(0f, 1f)
-                                    val currentScrollPercent = if (isDraggingScroll) dragScrollPercent else listScrollPercent
-
-                                    Box(
-                                        modifier = Modifier
-                                            .offset(y = (maxHeight - 60.dp) * currentScrollPercent)
-                                            .width(32.dp)
-                                            .height(60.dp)
-                                            .pointerInput(maxHeight, totalItems) {
-                                                detectDragGestures(
-                                                    onDragStart = { 
-                                                        isDraggingScroll = true 
-                                                        val currentMax = (viewModel.explorerFiles.size - listState.layoutInfo.visibleItemsInfo.size).coerceAtLeast(1)
-                                                        dragScrollPercent = (listState.firstVisibleItemIndex.toFloat() / currentMax.toFloat()).coerceIn(0f, 1f)
-                                                    },
-                                                    onDragEnd = { isDraggingScroll = false },
-                                                    onDrag = { change, dragAmount ->
-                                                        change.consume()
-                                                        val delta = dragAmount.y / (maxHeight.toPx() - 60.dp.toPx())
-                                                        dragScrollPercent = (dragScrollPercent + delta).coerceIn(0f, 1f)
-                                                        val currentMax = (viewModel.explorerFiles.size - listState.layoutInfo.visibleItemsInfo.size).coerceAtLeast(1)
-                                                        val targetIndex = (dragScrollPercent * currentMax).toInt().coerceIn(0, viewModel.explorerFiles.size - 1)
-                                                        scope.launch { listState.scrollToItem(targetIndex) }
+                        } else {
+                            Box(modifier = Modifier.fillMaxSize()) {
+                                var isDraggingScroll by remember { mutableStateOf(false) }
+                                
+                                LazyColumn(
+                                    modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 4.dp), 
+                                    state = listState
+                                ) {
+                                    items(viewModel.explorerFiles) { file ->
+                                        FileRow(
+                                            file = file, 
+                                            isHighlighted = selectedFiles.contains(file) || file.path == viewModel.highlightedPath,
+                                            isPinned = viewModel.pinnedPaths.contains(file.path),
+                                            onClick = {
+                                                if (viewModel.isPickerMode) {
+                                                    val isDir = java.io.File(file.path).isDirectory || file.path.contains("!/")
+                                                    if (isDir) {
+                                                        viewModel.onFileClicked(file, context, loadFolder)
+                                                    } else if (viewModel.pickerAllowMultiple) {
+                                                        viewModel.toggleSelection(file)
+                                                    } else {
+                                                        viewModel.finishPicking(context, listOf(file))
                                                     }
-                                                )
+                                                } else if (selectedFiles.isNotEmpty()) {
+                                                    viewModel.toggleSelection(file) 
+                                                } else {
+                                                    viewModel.onFileClicked(file, context, loadFolder)
+                                                }
                                             },
-                                        contentAlignment = Alignment.CenterEnd
-                                    ) {
+                                            onLongClick = { viewModel.toggleSelection(file) }
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                    }
+                                }
+
+                                // Explorer Fast-Scroll Handle
+                                if (viewModel.explorerFiles.size > 20) {
+                                    BoxWithConstraints(modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().width(40.dp)) {
+                                        var showScrollbar by remember { mutableStateOf(false) }
+                                        var dragScrollPercent by remember { mutableFloatStateOf(0f) }
+                                        
+                                        LaunchedEffect(listState.isScrollInProgress, isDraggingScroll) {
+                                            if (listState.isScrollInProgress || isDraggingScroll) {
+                                                showScrollbar = true
+                                            } else {
+                                                kotlinx.coroutines.delay(1500)
+                                                showScrollbar = false
+                                            }
+                                        }
+                                        val scrollAlpha by animateFloatAsState(if (showScrollbar) 1f else 0f, label = "")
+                                        val totalItems = viewModel.explorerFiles.size
+                                        val maxScrollIndex = (totalItems - listState.layoutInfo.visibleItemsInfo.size).coerceAtLeast(1)
+                                        val listScrollPercent = (listState.firstVisibleItemIndex.toFloat() / maxScrollIndex.toFloat()).coerceIn(0f, 1f)
+                                        val currentScrollPercent = if (isDraggingScroll) dragScrollPercent else listScrollPercent
+
                                         Box(
                                             modifier = Modifier
-                                                .width(8.dp)
-                                                .fillMaxHeight()
-                                                .padding(end = 2.dp)
-                                                .background(MaterialTheme.colorScheme.primary.copy(alpha = scrollAlpha), RoundedCornerShape(4.dp))
-                                        )
+                                                .offset(y = (maxHeight - 60.dp) * currentScrollPercent)
+                                                .width(32.dp)
+                                                .height(60.dp)
+                                                .pointerInput(maxHeight, totalItems) {
+                                                    detectDragGestures(
+                                                        onDragStart = { 
+                                                            isDraggingScroll = true 
+                                                            val currentMax = (viewModel.explorerFiles.size - listState.layoutInfo.visibleItemsInfo.size).coerceAtLeast(1)
+                                                            dragScrollPercent = (listState.firstVisibleItemIndex.toFloat() / currentMax.toFloat()).coerceIn(0f, 1f)
+                                                        },
+                                                        onDragEnd = { isDraggingScroll = false },
+                                                        onDrag = { change, dragAmount ->
+                                                            change.consume()
+                                                            val delta = dragAmount.y / (maxHeight.toPx() - 60.dp.toPx())
+                                                            dragScrollPercent = (dragScrollPercent + delta).coerceIn(0f, 1f)
+                                                            val currentMax = (viewModel.explorerFiles.size - listState.layoutInfo.visibleItemsInfo.size).coerceAtLeast(1)
+                                                            val targetIndex = (dragScrollPercent * currentMax).toInt().coerceIn(0, viewModel.explorerFiles.size - 1)
+                                                            scope.launch { listState.scrollToItem(targetIndex) }
+                                                        }
+                                                    )
+                                                },
+                                            contentAlignment = Alignment.CenterEnd
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .width(8.dp)
+                                                    .fillMaxHeight()
+                                                    .padding(end = 2.dp)
+                                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = scrollAlpha), RoundedCornerShape(4.dp))
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
+
+                        PullToRefreshContainer(
+                            state = folderPullState,
+                            modifier = Modifier.align(Alignment.TopCenter),
+                            containerColor = Color(0xFF161B22),
+                            contentColor = Color(0xFF00E5FF)
+                        )
                     }
                 }
             }
