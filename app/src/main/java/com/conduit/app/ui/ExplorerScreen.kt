@@ -892,6 +892,122 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
             }
         }
 
+        if (viewModel.showAppChooserDialog && viewModel.pendingOpenFile != null) {
+            val file = viewModel.pendingOpenFile!!
+            val options = viewModel.pendingAppOptions
+            var selectedPackage by remember { mutableStateOf(options.firstOrNull()?.packageName ?: "") }
+
+            AlertDialog(
+                onDismissRequest = {
+                    viewModel.showAppChooserDialog = false
+                    viewModel.pendingOpenFile = null
+                    viewModel.pendingOpenIntent = null
+                },
+                title = {
+                    Column {
+                        Text("Open with", style = MaterialTheme.typography.titleMedium, color = Color.White)
+                        Text(
+                            text = file.name,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.Gray,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        )
+                    }
+                },
+                text = {
+                    androidx.compose.foundation.lazy.LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 280.dp)
+                    ) {
+                        items(options) { app ->
+                            val isSelected = selectedPackage == app.packageName
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        if (isSelected) Color(0xFF00E5FF).copy(alpha = 0.15f)
+                                        else Color.Transparent
+                                    )
+                                    .clickable { selectedPackage = app.packageName }
+                                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val bitmap = remember(app.packageName) {
+                                    val d = app.icon
+                                    if (d is android.graphics.drawable.BitmapDrawable && d.bitmap != null) {
+                                        d.bitmap
+                                    } else {
+                                        val bmp = android.graphics.Bitmap.createBitmap(72, 72, android.graphics.Bitmap.Config.ARGB_8888)
+                                        val c = android.graphics.Canvas(bmp)
+                                        d.setBounds(0, 0, 72, 72)
+                                        d.draw(c)
+                                        bmp
+                                    }
+                                }
+                                Image(
+                                    bitmap = bitmap.asImageBitmap(),
+                                    contentDescription = app.label,
+                                    modifier = Modifier.size(36.dp).clip(RoundedCornerShape(6.dp))
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = app.label,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (isSelected) Color(0xFF00E5FF) else Color.White,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                )
+                                RadioButton(
+                                    selected = isSelected,
+                                    onClick = { selectedPackage = app.packageName },
+                                    colors = RadioButtonDefaults.colors(
+                                        selectedColor = Color(0xFF00E5FF),
+                                        unselectedColor = Color.Gray
+                                    )
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = {
+                            viewModel.launchPendingApp(context, selectedPackage, saveAsDefault = false)
+                        }) {
+                            Text("Just Once", color = Color(0xFF00E5FF))
+                        }
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Button(
+                            onClick = {
+                                viewModel.launchPendingApp(context, selectedPackage, saveAsDefault = true)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF))
+                        ) {
+                            Text("Always", color = Color.Black, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        viewModel.showAppChooserDialog = false
+                        viewModel.pendingOpenFile = null
+                        viewModel.pendingOpenIntent = null
+                    }) {
+                        Text("Cancel", color = Color.Gray)
+                    }
+                }
+            )
+        }
+
         val showCollision = viewModel.showExtractionConflictDialog || viewModel.showTransferConflictDialog
         if (showCollision) {
             val isTransfer = viewModel.showTransferConflictDialog
