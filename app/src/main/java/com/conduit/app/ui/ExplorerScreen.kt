@@ -119,6 +119,11 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
     var showRenameDialog by remember { mutableStateOf(false) }
     var showPropertyDialog by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) }
+
+    val bottomBarPadding by animateDpAsState(
+        targetValue = if (selectedFiles.isNotEmpty() || viewModel.isExtractionMode || viewModel.isTransferMode) 96.dp else 16.dp,
+        label = "bottomBarPadding"
+    )
     val loadFolder = { path: String -> viewModel.loadExplorerFolder(path, context) }
     val openCategory = { cat: String -> viewModel.openExplorerCategory(context, cat) }
 
@@ -209,7 +214,10 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                     .fillMaxWidth()
                     .nestedScroll(dashboardPullState.nestedScrollConnection)
             ) {
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = bottomBarPadding)
+                ) {
                     item { Spacer(modifier = Modifier.height(8.dp)) }
                     
                     // Storage Card
@@ -404,7 +412,8 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                                 
                                 LazyColumn(
                                     modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 4.dp), 
-                                    state = listState
+                                    state = listState,
+                                    contentPadding = PaddingValues(bottom = bottomBarPadding)
                                 ) {
                                     items(viewModel.explorerFiles) { file ->
                                         FileRow(
@@ -876,55 +885,101 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
         }
 
         if (showPropertyDialog && selectedFiles.isNotEmpty()) {
-            val f = java.io.File(selectedFiles.first().path)
+            val isSingle = selectedFiles.size == 1
+            val firstFile = java.io.File(selectedFiles.first().path)
+
+            val totalBytes = selectedFiles.sumOf { item ->
+                val f = java.io.File(item.path)
+                if (f.isFile) f.length() else 0L
+            }
+            val formattedTotalSize = FileScanner.formatSize(totalBytes)
+
+            val parentDirs = selectedFiles.map { item ->
+                val path = item.path
+                if (path.contains("!/")) {
+                    path.substringBefore("!/")
+                } else {
+                    java.io.File(path).parent ?: "/storage/emulated/0"
+                }
+            }.distinct()
+            val isSameFolder = parentDirs.size == 1
+            val commonParent = parentDirs.firstOrNull() ?: "/storage/emulated/0"
+
             AlertDialog(
                 onDismissRequest = { showPropertyDialog = false },
-                title = { Text("Properties") },
+                title = { 
+                    Text(
+                        if (isSingle) "Properties" else "Properties (${selectedFiles.size} items)",
+                        color = Color.White
+                    ) 
+                },
                 text = {
                     Column {
-                        Text("Name: ${f.name}", style = MaterialTheme.typography.bodyMedium)
-                        Text("Path: ${f.absolutePath}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                        val sizeStr = if (f.isDirectory) "--" else try { 
-                            val python = com.chaquo.python.Python.getInstance().getModule("os")
-                            // Using a quick logic here since FileScanner is an object
-                            val bytes = f.length()
-                            if (bytes <= 0) "0 B" else {
-                                val units = arrayOf("B", "KB", "MB", "GB", "TB")
-                                val i = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
-                                String.format("%.1f %s", bytes / Math.pow(1024.0, i.toDouble()), units[i])
-                            }
-                        } catch(e: Exception) { "Unknown" }
-                        Text("Size: $sizeStr")
-                        Text("Modified: ${java.util.Date(f.lastModified())}")
-                        Row(modifier = Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (isSingle) {
+                            Text("Name: ${firstFile.name}", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("Path: ${firstFile.absolutePath}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            val sizeStr = if (firstFile.isDirectory) "--" else FileScanner.formatSize(firstFile.length())
+                            Text("Size: $sizeStr", style = MaterialTheme.typography.bodySmall, color = Color.White)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text("Modified: ${java.util.Date(firstFile.lastModified())}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        } else {
+                            Text("Count: ${selectedFiles.size} items selected", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("Total Size: $formattedTotalSize", style = MaterialTheme.typography.bodySmall, color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            val locationText = if (isSameFolder) "Location: $commonParent" else "Locations: Multiple folders"
+                            Text(locationText, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = {
                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Path", f.absolutePath))
-                                    android.widget.Toast.makeText(context, "Path copied to clipboard", android.widget.Toast.LENGTH_SHORT).show()
+                                    val textToCopy = selectedFiles.joinToString("\n") { it.path }
+                                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Paths", textToCopy))
+                                    val msg = if (isSingle) "Path copied to clipboard" else "${selectedFiles.size} paths copied to clipboard"
+                                    android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
                                 },
                                 modifier = Modifier.weight(1f)
-                            ) { Text("Copy Path", fontSize = 12.sp) }
+                            ) { 
+                                Text(if (isSingle) "Copy Path" else "Copy Paths", fontSize = 12.sp) 
+                            }
                             
                             Button(
                                 onClick = {
-                                    val parentPath = f.parent ?: "/storage/emulated/0"
-                                    viewModel.highlightedPath = f.absolutePath
-                                    viewModel.explorerCategory = "Internal Storage"
-                                    loadFolder(parentPath)
-                                    showPropertyDialog = false
-                                    viewModel.clearSelection()
+                                    if (isSameFolder) {
+                                        viewModel.highlightedPath = selectedFiles.first().path
+                                        viewModel.explorerCategory = "Internal Storage"
+                                        loadFolder(commonParent)
+                                        showPropertyDialog = false
+                                        viewModel.clearSelection()
+                                    }
                                 },
+                                enabled = isSameFolder,
                                 modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF))
-                            ) { Text("Open Location", color = Color.Black, fontSize = 12.sp) }
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF00E5FF),
+                                    disabledContainerColor = Color.White.copy(alpha = 0.1f),
+                                    disabledContentColor = Color.Gray
+                                )
+                            ) { 
+                                Text("Open Location", color = if (isSameFolder) Color.Black else Color.Gray, fontSize = 12.sp) 
+                            }
                         }
                     }
                 },
-                confirmButton = { TextButton(onClick = { 
-                    showPropertyDialog = false
-                    viewModel.clearSelection()
-                }) { Text("OK") } }
+                confirmButton = { 
+                    TextButton(onClick = { 
+                        showPropertyDialog = false
+                        viewModel.clearSelection()
+                    }) { 
+                        Text("OK") 
+                    } 
+                }
             )
         }
     }
