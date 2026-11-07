@@ -82,7 +82,8 @@ fun ConduitIDE(viewModel: ConduitViewModel) {
                         onExplorerClick = { viewModel.currentView = "explorer"; viewModel.selectedTab = 1; scope.launch { drawerState.close() } },
                         onInterpreterClick = { viewModel.currentView = "interpreter"; scope.launch { drawerState.close() } },
                         onManualClick = { viewModel.currentView = "manual"; scope.launch { drawerState.close() } },
-                        onChatNavClick = { viewModel.currentView = "chat"; viewModel.selectedTab = 0; scope.launch { drawerState.close() } }
+                        onChatNavClick = { viewModel.currentView = "chat"; viewModel.selectedTab = 0; scope.launch { drawerState.close() } },
+                        onSettingsClick = { viewModel.currentView = "settings"; scope.launch { drawerState.close() } }
                     )
             }
         }
@@ -100,10 +101,10 @@ fun ConduitIDE(viewModel: ConduitViewModel) {
                             exit = androidx.compose.animation.fadeOut()
                         ) {
                             Column {
-                                val titleText = if (viewModel.currentView == "chat") {
-                                    viewModel.sessions.find { it.first == viewModel.currentSessionId }?.second ?: "New Conversation"
-                                } else {
-                                    "Conduit AI"
+                                val titleText = when (viewModel.currentView) {
+                                    "chat" -> viewModel.sessions.find { it.first == viewModel.currentSessionId }?.second ?: "New Conversation"
+                                    "settings" -> "Settings"
+                                    else -> "Conduit AI"
                                 }
                                 Text(
                                     text = titleText,
@@ -253,6 +254,7 @@ fun ConduitIDE(viewModel: ConduitViewModel) {
                         viewModel = viewModel,
                         onRun = { viewModel.runManualCode(context) }
                     )
+                    "settings" -> SettingsScreen(viewModel)
                 }
             }
         }
