@@ -17,6 +17,7 @@ class NexusBridgeService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private lateinit var messenger: Messenger
+    private val inputQueues = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.LinkedBlockingQueue<String>>()
 
     companion object {
         private const val TAG = "NexusBridge"
@@ -26,6 +27,8 @@ class NexusBridgeService : Service() {
         const val MSG_STREAM_OUTPUT = 101
         const val MSG_EXECUTION_SUCCESS = 102
         const val MSG_EXECUTION_ERROR = 103
+        const val MSG_REQUEST_INPUT = 104
+        const val MSG_PROVIDE_INPUT = 105
 
         // Bundle Keys
         const val KEY_CODE = "key_code"
@@ -33,6 +36,8 @@ class NexusBridgeService : Service() {
         const val KEY_OUTPUT_CHUNK = "key_chunk"
         const val KEY_FINAL_RESULT = "key_result"
         const val KEY_ERROR_MESSAGE = "key_error"
+        const val KEY_INPUT_PROMPT = "key_prompt"
+        const val KEY_INPUT_VALUE = "key_input_value"
     }
 
     override fun onCreate() {
@@ -41,9 +46,15 @@ class NexusBridgeService : Service() {
             Python.start(AndroidPlatform(this))
         }
 
-        messenger = Messenger(IncomingHandler(serviceScope) { code, execId, replyTo ->
-            executePython(code, execId, replyTo)
-        })
+        messenger = Messenger(IncomingHandler(
+            scope = serviceScope,
+            onProvideInput = { execId, value ->
+                inputQueues[execId]?.offer(value)
+            },
+            onExecute = { code, execId, replyTo ->
+                executePython(code, execId, replyTo)
+            }
+        ))
         Log.d(TAG, "Nexus Bridge Service initialized and armed with Chaquopy.")
     }
 
@@ -61,6 +72,8 @@ class NexusBridgeService : Service() {
     }
 
     private fun executePython(code: String, execId: String, replyTo: Messenger) {
+        val queue = java.util.concurrent.LinkedBlockingQueue<String>()
+        inputQueues[execId] = queue
         serviceScope.launch {
             try {
                 val python = Python.getInstance()
@@ -73,7 +86,18 @@ class NexusBridgeService : Service() {
                     }
                 }
 
-                val result = executor.callAttr("run_code", code, outputCallback).toString()
+                val inputCallback = object {
+                    fun onInputRequested(prompt: String): String {
+                        sendInputRequest(replyTo, execId, prompt)
+                        return try {
+                            queue.poll(120, java.util.concurrent.TimeUnit.SECONDS) ?: ""
+                        } catch (e: InterruptedException) {
+                            ""
+                        }
+                    }
+                }
+
+                val result = executor.callAttr("run_code", code, outputCallback, inputCallback).toString()
                 val isTraceback = result.contains("Traceback (most recent call last)") || result.startsWith("Error:")
 
                 if (isTraceback) {
@@ -84,7 +108,23 @@ class NexusBridgeService : Service() {
             } catch (t: Throwable) {
                 Log.e(TAG, "Execution exception: ${t.message}", t)
                 sendError(replyTo, execId, "Execution Exception: ${t.message}\n${t.stackTraceToString()}")
+            } finally {
+                inputQueues.remove(execId)
             }
+        }
+    }
+
+    private fun sendInputRequest(replyTo: Messenger, execId: String, prompt: String) {
+        try {
+            val msg = OsMessage.obtain(null, MSG_REQUEST_INPUT).apply {
+                data = Bundle().apply {
+                    putString(KEY_EXEC_ID, execId)
+                    putString(KEY_INPUT_PROMPT, prompt)
+                }
+            }
+            replyTo.send(msg)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed sending input request: ${e.message}")
         }
     }
 
@@ -131,6 +171,8 @@ class NexusBridgeService : Service() {
     }
 
     override fun onDestroy() {
+        inputQueues.values.forEach { it.offer("") }
+        inputQueues.clear()
         serviceScope.cancel()
         super.onDestroy()
         Log.d(TAG, "Nexus Bridge Service destroyed.")
@@ -138,6 +180,7 @@ class NexusBridgeService : Service() {
 
     private class IncomingHandler(
         private val scope: CoroutineScope,
+        private val onProvideInput: (execId: String, value: String) -> Unit,
         private val onExecute: (code: String, execId: String, replyTo: Messenger) -> Unit
     ) : Handler(Looper.getMainLooper()) {
 
@@ -150,6 +193,14 @@ class NexusBridgeService : Service() {
                     val replyTo = msg.replyTo
                     if (code.isNotBlank() && replyTo != null) {
                         onExecute(code, execId, replyTo)
+                    }
+                }
+                MSG_PROVIDE_INPUT -> {
+                    val bundle = msg.data ?: return
+                    val execId = bundle.getString(KEY_EXEC_ID) ?: ""
+                    val value = bundle.getString(KEY_INPUT_VALUE) ?: ""
+                    if (execId.isNotBlank()) {
+                        onProvideInput(execId, value)
                     }
                 }
                 else -> super.handleMessage(msg)
