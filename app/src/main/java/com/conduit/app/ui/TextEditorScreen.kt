@@ -34,7 +34,12 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.text.style.TextAlign
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -65,7 +70,22 @@ fun TextEditorScreen(viewModel: ConduitViewModel, onBack: () -> Unit) {
 
     Column(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         TopAppBar(
-            title = { },
+            title = {
+                Column {
+                    Text(
+                        text = viewModel.editingFile?.name ?: "Editor",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "${viewModel.editorLines.size} lines • ${if (viewModel.isEditLocked) "Read Only" else "Editing"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (viewModel.isEditLocked) Color(0xFF00E5FF) else Color(0xFFFFD740)
+                    )
+                }
+            },
             windowInsets = WindowInsets(0.dp),
             navigationIcon = {
                 IconButton(onClick = {
@@ -109,10 +129,17 @@ fun TextEditorScreen(viewModel: ConduitViewModel, onBack: () -> Unit) {
                     }
                 }
 
-                IconButton(onClick = { viewModel.isEditLocked = !viewModel.isEditLocked }) {
+                IconButton(onClick = {
+                    if (viewModel.isEditLocked) {
+                        viewModel.isEditLocked = false
+                    } else {
+                        val currentText = editTextRef?.text?.toString() ?: viewModel.editorText
+                        viewModel.saveCurrentFile(currentText)
+                    }
+                }) {
                     Icon(
-                        if (viewModel.isEditLocked) Icons.Default.Edit else Icons.Default.EditOff,
-                        null, 
+                        if (viewModel.isEditLocked) Icons.Default.Edit else Icons.Default.Lock,
+                        contentDescription = if (viewModel.isEditLocked) "Edit" else "Lock", 
                         tint = if (viewModel.isEditLocked) Color.Gray else MaterialTheme.colorScheme.primary
                     )
                 }
@@ -151,102 +178,185 @@ fun TextEditorScreen(viewModel: ConduitViewModel, onBack: () -> Unit) {
             }
         )
 
-        // Using Native AndroidView with Fast Scroll overlay
+        // Dual-Engine Content Box
         Box(modifier = Modifier.fillMaxSize().background(Color(0xFF1E1E1E))) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-                factory = { ctx ->
-                    EditText(ctx).apply {
-                        editTextRef = this
-                        inputType = InputType.TYPE_CLASS_TEXT or 
-                                    InputType.TYPE_TEXT_FLAG_MULTI_LINE or 
-                                    InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-                                        gravity = Gravity.TOP
-                typeface = Typeface.MONOSPACE
-                textSize = 14f
-                setTextColor(android.graphics.Color.WHITE)
-                background = null
-                setVerticalScrollBarEnabled(true)
-                
-                // Add Momentum Fling Scroller
-                val overScroller = android.widget.OverScroller(ctx)
-                var flingRunnable: Runnable? = null
-                val gestureDetector = android.view.GestureDetector(ctx, object : android.view.GestureDetector.SimpleOnGestureListener() {
-                    override fun onFling(e1: android.view.MotionEvent?, e2: android.view.MotionEvent, velocityX: Float, velocityY: Float): Boolean {
-                        val et = editTextRef ?: return false
-                        val layoutHeight = et.layout?.height ?: (et.lineCount * et.lineHeight)
-                        val maxY = Math.max(0, layoutHeight + et.paddingTop + et.paddingBottom - et.height)
-                        overScroller.fling(0, et.scrollY, 0, -velocityY.toInt(), 0, 0, 0, maxY, 0, 0)
-                        
-                        flingRunnable?.let { et.removeCallbacks(it) }
-                        flingRunnable = object : Runnable {
-                            override fun run() {
-                                if (overScroller.computeScrollOffset()) {
-                                    et.scrollTo(0, overScroller.currY)
-                                    et.postOnAnimation(this)
-                                }
+            if (viewModel.isEditLocked) {
+                // === ENGINE 1: VIRTUALIZED READ-ONLY MONOSPACE VIEWER (ZERO MAIN-THREAD LAG) ===
+                val listState = rememberLazyListState()
+                val totalLines = viewModel.editorLines.size
+                val gutterWidth = remember(totalLines) {
+                    (totalLines.toString().length * 9 + 20).dp.coerceAtLeast(42.dp)
+                }
+
+                val isListScrolling by remember { derivedStateOf { listState.isScrollInProgress } }
+                var isDraggingListThumb by remember { mutableStateOf(false) }
+                val listScrollAlpha by animateFloatAsState(if (isListScrolling || isDraggingListThumb) 1f else 0.35f, label = "")
+
+                val currentListPercent by remember {
+                    derivedStateOf {
+                        val firstVisible = listState.firstVisibleItemIndex
+                        val visibleCount = listState.layoutInfo.visibleItemsInfo.size
+                        val maxScroll = (totalLines - visibleCount).coerceAtLeast(1)
+                        (firstVisible.toFloat() / maxScroll.toFloat()).coerceIn(0f, 1f)
+                    }
+                }
+
+                SelectionContainer {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        itemsIndexed(
+                            items = viewModel.editorLines,
+                            key = { index, _ -> index }
+                        ) { index, line ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 1.dp)
+                            ) {
+                                Text(
+                                    text = "${index + 1}",
+                                    color = Color.Gray.copy(alpha = 0.5f),
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    textAlign = TextAlign.End,
+                                    modifier = Modifier
+                                        .width(gutterWidth)
+                                        .padding(end = 12.dp)
+                                )
+                                Text(
+                                    text = line.ifEmpty { " " },
+                                    color = Color(0xFFD4D4D4),
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 13.sp,
+                                    modifier = Modifier.weight(1f)
+                                )
                             }
                         }
-                        et.postOnAnimation(flingRunnable)
-                        return true
                     }
-                })
-                
-                setOnTouchListener { _, event ->
-                    if (event.action == android.view.MotionEvent.ACTION_DOWN) {
-                        overScroller.forceFinished(true)
-                        flingRunnable?.let { removeCallbacks(it) }
-                    }
-                    gestureDetector.onTouchEvent(event)
-                    false // Return false to let EditText handle cursor placement and selection natively
                 }
-                
-                // Save the default keyListener to toggle read-only mode later
-                tag = keyListener
-                
-                setText(viewModel.editorText)
 
-                setOnScrollChangeListener { _, _, scrollY, _, _ ->
-                    isScrolling = true
-                    val layoutHeight = layout?.height ?: (lineCount * lineHeight)
-                    val totalScrollRange = layoutHeight + paddingTop + paddingBottom - height
-                    if (totalScrollRange > 0) {
-                        scrollPercent = (scrollY.toFloat() / totalScrollRange.toFloat()).coerceIn(0f, 1f)
+                // Fast-Scroll Scrub Bar for Read Mode
+                if (totalLines > 30) {
+                    BoxWithConstraints(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .width(40.dp)
+                            .align(Alignment.CenterEnd)
+                    ) {
+                        val constraintsHeight = maxHeight
+                        Box(
+                            modifier = Modifier
+                                .offset(y = (constraintsHeight - 60.dp) * currentListPercent)
+                                .width(32.dp)
+                                .height(60.dp)
+                                .pointerInput(totalLines) {
+                                    detectDragGestures(
+                                        onDragStart = { isDraggingListThumb = true },
+                                        onDragEnd = { isDraggingListThumb = false },
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+                                            val delta = dragAmount.y / (constraintsHeight.toPx() - 60.dp.toPx())
+                                            val newPercent = (currentListPercent + delta).coerceIn(0f, 1f)
+                                            val targetIndex = (newPercent * (totalLines - 1)).toInt().coerceIn(0, totalLines - 1)
+                                            scope.launch { listState.scrollToItem(targetIndex) }
+                                        }
+                                    )
+                                },
+                            contentAlignment = Alignment.CenterEnd
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(8.dp)
+                                    .fillMaxHeight()
+                                    .padding(end = 2.dp)
+                                    .background(
+                                        color = MaterialTheme.colorScheme.primary.copy(alpha = listScrollAlpha),
+                                        shape = RoundedCornerShape(4.dp)
+                                    )
+                            )
+                        }
                     }
                 }
-                        
-                        addTextChangedListener(object : android.text.TextWatcher {
-                            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-                            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-                            override fun afterTextChanged(s: android.text.Editable?) {
-                                if (hasFocus()) {
-                                    viewModel.hasUnsavedChanges = true
+            } else {
+                // === ENGINE 2: NATIVE FLING-SCROLLER EDIT TEXT (MOUNTED ONLY DURING EDITING) ===
+                AndroidView(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+                    factory = { ctx ->
+                        EditText(ctx).apply {
+                            editTextRef = this
+                            inputType = InputType.TYPE_CLASS_TEXT or 
+                                        InputType.TYPE_TEXT_FLAG_MULTI_LINE or 
+                                        InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                            gravity = Gravity.TOP
+                            typeface = Typeface.MONOSPACE
+                            textSize = 14f
+                            setTextColor(android.graphics.Color.WHITE)
+                            background = null
+                            setVerticalScrollBarEnabled(true)
+                            
+                            val overScroller = android.widget.OverScroller(ctx)
+                            var flingRunnable: Runnable? = null
+                            val gestureDetector = android.view.GestureDetector(ctx, object : android.view.GestureDetector.SimpleOnGestureListener() {
+                                override fun onFling(e1: android.view.MotionEvent?, e2: android.view.MotionEvent, velocityX: Float, velocityY: Float): Boolean {
+                                    val et = editTextRef ?: return false
+                                    val layoutHeight = et.layout?.height ?: (et.lineCount * et.lineHeight)
+                                    val maxY = Math.max(0, layoutHeight + et.paddingTop + et.paddingBottom - et.height)
+                                    overScroller.fling(0, et.scrollY, 0, -velocityY.toInt(), 0, 0, 0, maxY, 0, 0)
+                                    
+                                    flingRunnable?.let { et.removeCallbacks(it) }
+                                    flingRunnable = object : Runnable {
+                                        override fun run() {
+                                            if (overScroller.computeScrollOffset()) {
+                                                et.scrollTo(0, overScroller.currY)
+                                                et.postOnAnimation(this)
+                                            }
+                                        }
+                                    }
+                                    et.postOnAnimation(flingRunnable)
+                                    return true
+                                }
+                            })
+                            
+                            setOnTouchListener { _, event ->
+                                if (event.action == android.view.MotionEvent.ACTION_DOWN) {
+                                    overScroller.forceFinished(true)
+                                    flingRunnable?.let { removeCallbacks(it) }
+                                }
+                                gestureDetector.onTouchEvent(event)
+                                false
+                            }
+                            
+                            setText(viewModel.editorText)
+
+                            setOnScrollChangeListener { _, _, scrollY, _, _ ->
+                                isScrolling = true
+                                val layoutHeight = layout?.height ?: (lineCount * lineHeight)
+                                val totalScrollRange = layoutHeight + paddingTop + paddingBottom - height
+                                if (totalScrollRange > 0) {
+                                    scrollPercent = (scrollY.toFloat() / totalScrollRange.toFloat()).coerceIn(0f, 1f)
                                 }
                             }
-                        })
+                            
+                            addTextChangedListener(object : android.text.TextWatcher {
+                                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                                override fun afterTextChanged(s: android.text.Editable?) {
+                                    if (hasFocus()) {
+                                        viewModel.hasUnsavedChanges = true
+                                    }
+                                }
+                            })
+                        }
                     }
-                },
-                update = { view ->
-                    // Instead of disabling the view (which breaks scrolling), we toggle the keyListener
-                    if (viewModel.isEditLocked) {
-                        if (view.keyListener != null) view.tag = view.keyListener
-                        view.keyListener = null
-                        view.movementMethod = android.text.method.ScrollingMovementMethod.getInstance()
-                    } else {
-                        if (view.keyListener == null) view.keyListener = view.tag as? android.text.method.KeyListener
-                        view.movementMethod = android.text.method.ArrowKeyMovementMethod.getInstance()
-                    }
-                }
-            )
+                )
 
-            // Fast Scroll Handle
-            if (true) {
+                // Fast Scroll Handle for Edit Mode
                 BoxWithConstraints(modifier = Modifier.fillMaxHeight().width(40.dp).align(Alignment.CenterEnd)) {
                     val constraintsHeight = maxHeight
-                    
                     var isDraggingThumb by remember { mutableStateOf(false) }
-                    
-                    // Efficient scrollbar fade logic decoupled from the actual drag state
+
                     LaunchedEffect(scrollPercent, isDraggingThumb) {
                         isScrolling = true
                         if (!isDraggingThumb) {
