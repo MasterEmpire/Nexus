@@ -10,12 +10,32 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.ui.graphics.Color
 
 object FileScanner {
-    private fun formatSize(bytes: Long): String {
+    fun formatSize(bytes: Long): String {
         if (bytes <= 0) return "0 B"
         val units = arrayOf("B", "KB", "MB", "GB", "TB")
         val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
         return String.format("%.1f %s", bytes / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
     }
+
+    fun formatTimestamp(epochMillis: Long): String {
+        if (epochMillis <= 0L) return ""
+        val now = System.currentTimeMillis()
+        val diff = now - epochMillis
+        val isWithin24Hours = diff >= -60_000L && diff < 24 * 60 * 60 * 1000L
+        return if (isWithin24Hours) {
+            java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault()).format(java.util.Date(epochMillis))
+        } else {
+            val nowCal = java.util.Calendar.getInstance()
+            val thenCal = java.util.Calendar.getInstance().apply { timeInMillis = epochMillis }
+            val pattern = if (nowCal.get(java.util.Calendar.YEAR) == thenCal.get(java.util.Calendar.YEAR)) {
+                "MMM d"
+            } else {
+                "MMM d, yyyy"
+            }
+            java.text.SimpleDateFormat(pattern, java.util.Locale.getDefault()).format(java.util.Date(epochMillis))
+        }
+    }
+
     fun getMediaFiles(context: Context, type: String): List<FileItem> {
         val files = mutableListOf<FileItem>()
         val uri = when (type) {
@@ -28,36 +48,44 @@ object FileScanner {
         val projection = arrayOf(
             MediaStore.MediaColumns.DISPLAY_NAME,
             MediaStore.MediaColumns.SIZE,
-            MediaStore.MediaColumns.DATA
+            MediaStore.MediaColumns.DATA,
+            MediaStore.MediaColumns.DATE_MODIFIED
         )
 
         context.contentResolver.query(uri, projection, null, null, "${MediaStore.MediaColumns.DATE_ADDED} DESC")?.use { cursor ->
             val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
             val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
             val pathCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
+            val dateCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED)
 
             var count = 0
-            while (cursor.moveToNext() && count < 50) { // Limit for performance
+            while (cursor.moveToNext() && count < 50) {
                 val sizeBytes = cursor.getLong(sizeCol)
                 val sizeStr = formatSize(sizeBytes)
-                                    val path = cursor.getString(pathCol) ?: ""
-                    files.add(FileItem(
-                        name = cursor.getString(nameCol) ?: "Unknown",
-                        meta = "$sizeStr • ${path.split("/").takeLast(2).firstOrNull() ?: ""}",
-                        icon = when(type) {
-                            "Images" -> Icons.Default.Image
-                            "Videos" -> Icons.Default.Videocam
-                            else -> Icons.Default.MusicNote
-                        },
-                        color = when(type) {
-                            "Images" -> Color(0xFFFF5252)
-                            "Videos" -> Color(0xFF7C4DFF)
-                            else -> Color(0xFF00E5FF)
-                        },
-                        path = path,
-                        lastModified = 0L,
-                        size = sizeBytes
-                    ))
+                val path = cursor.getString(pathCol) ?: ""
+                val dateSec = if (dateCol != -1) cursor.getLong(dateCol) else 0L
+                val dateMillis = if (dateSec > 0) dateSec * 1000L else File(path).lastModified()
+                val timeStr = formatTimestamp(dateMillis)
+                val parentFolder = path.split("/").takeLast(2).firstOrNull() ?: ""
+                val metaParts = listOf(sizeStr, timeStr, parentFolder).filter { it.isNotBlank() }
+
+                files.add(FileItem(
+                    name = cursor.getString(nameCol) ?: "Unknown",
+                    meta = metaParts.joinToString(" • "),
+                    icon = when(type) {
+                        "Images" -> Icons.Default.Image
+                        "Videos" -> Icons.Default.Videocam
+                        else -> Icons.Default.MusicNote
+                    },
+                    color = when(type) {
+                        "Images" -> Color(0xFFFF5252)
+                        "Videos" -> Color(0xFF7C4DFF)
+                        else -> Color(0xFF00E5FF)
+                    },
+                    path = path,
+                    lastModified = dateMillis,
+                    size = sizeBytes
+                ))
                 count++
             }
         }
@@ -117,8 +145,9 @@ object FileScanner {
                         else -> Color.Gray
                     }
 
+                    val lastMod = file.lastModified()
+                    val timeStr = formatTimestamp(lastMod)
                     val metaText = if (isDir) {
-                        val lastMod = file.lastModified()
                         val cached = cache?.get(file.absolutePath)
                         val count = if (cached != null && cached.first == lastMod) {
                             cached.second
@@ -127,9 +156,11 @@ object FileScanner {
                             cache?.put(file.absolutePath, lastMod to freshCount)
                             freshCount
                         }
-                        "$count ${if (count == 1) "item" else "items"}"
+                        val countText = "$count ${if (count == 1) "item" else "items"}"
+                        if (timeStr.isNotBlank()) "$countText • $timeStr" else countText
                     } else {
-                        formatSize(file.length())
+                        val sizeStr = formatSize(file.length())
+                        if (timeStr.isNotBlank()) "$sizeStr • $timeStr" else sizeStr
                     }
                     
                     items.add(FileItem(
@@ -138,7 +169,7 @@ object FileScanner {
                         icon = fileIcon,
                         color = fileColor,
                         path = file.absolutePath,
-                        lastModified = file.lastModified(),
+                        lastModified = lastMod,
                         size = file.length()
                     ))
                 }
@@ -186,6 +217,7 @@ object FileScanner {
             val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
             val pathCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATA)
             val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MIME_TYPE)
+            val dateCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.DATE_MODIFIED)
 
             var count = 0
             while (cursor.moveToNext() && count < 50) {
@@ -193,7 +225,13 @@ object FileScanner {
                 if (File(path).isDirectory) continue
                 
                 val mime = cursor.getString(mimeCol) ?: ""
-                val sizeStr = formatSize(cursor.getLong(sizeCol))
+                val sizeBytes = cursor.getLong(sizeCol)
+                val sizeStr = formatSize(sizeBytes)
+                val dateSec = if (dateCol != -1) cursor.getLong(dateCol) else 0L
+                val dateMillis = if (dateSec > 0) dateSec * 1000L else File(path).lastModified()
+                val timeStr = formatTimestamp(dateMillis)
+                val parentFolder = path.split("/").takeLast(2).firstOrNull() ?: ""
+                val metaParts = listOf(sizeStr, timeStr, parentFolder).filter { it.isNotBlank() }
                 
                 val ext = path.substringAfterLast('.', "").lowercase()
                 val isImg = mime.contains("image") || listOf("png", "jpg", "jpeg", "gif", "webp", "bmp").contains(ext)
@@ -205,7 +243,7 @@ object FileScanner {
 
                 files.add(FileItem(
                     name = cursor.getString(nameCol) ?: "Unknown",
-                    meta = "$sizeStr • ${path.split("/").takeLast(2).firstOrNull() ?: ""}",
+                    meta = metaParts.joinToString(" • "),
                     icon = when {
                         isImg -> Icons.Default.Image
                         isVid -> Icons.Default.Videocam
@@ -227,7 +265,9 @@ object FileScanner {
                         isCode -> Color(0xFFFFD740)
                         else -> Color(0xFF00E5FF)
                     },
-                    path = path
+                    path = path,
+                    lastModified = dateMillis,
+                    size = sizeBytes
                 ))
                 count++
             }
@@ -282,9 +322,13 @@ object FileScanner {
                             val isVid = listOf("mp4", "mkv", "avi").contains(ext)
                             val isAud = listOf("mp3", "wav", "m4a", "ogg").contains(ext)
                             
+                            val sizeStr = formatSize(entry.size)
+                            val timeStr = formatTimestamp(entry.time)
+                            val zipMeta = if (timeStr.isNotBlank()) "$sizeStr • $timeStr" else sizeStr
+
                             fileList.add(FileItem(
                                 name = itemName,
-                                meta = formatSize(entry.size),
+                                meta = zipMeta,
                                 icon = when {
                                     isImg -> Icons.Default.Image
                                     isVid -> Icons.Default.Videocam
@@ -346,6 +390,7 @@ object FileScanner {
             val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
             val pathCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATA)
             val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MIME_TYPE)
+            val dateCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.DATE_MODIFIED)
 
             var count = 0
             while (cursor.moveToNext() && count < 100) {
@@ -353,12 +398,18 @@ object FileScanner {
                 if (path.split("/").any { it.startsWith(".") }) continue
 
                 val name = cursor.getString(nameCol) ?: "Unknown"
-                val sizeStr = formatSize(cursor.getLong(sizeCol))
+                val sizeBytes = cursor.getLong(sizeCol)
+                val sizeStr = formatSize(sizeBytes)
+                val dateSec = if (dateCol != -1) cursor.getLong(dateCol) else 0L
+                val dateMillis = if (dateSec > 0) dateSec * 1000L else File(path).lastModified()
+                val timeStr = formatTimestamp(dateMillis)
+                val parentFolder = path.split("/").takeLast(2).firstOrNull() ?: ""
+                val metaParts = listOf(sizeStr, timeStr, parentFolder).filter { it.isNotBlank() }
                 val mime = cursor.getString(mimeCol) ?: ""
                 
                 files.add(FileItem(
                     name = name,
-                    meta = "$sizeStr • ${path.split("/").takeLast(2).firstOrNull() ?: ""}",
+                    meta = metaParts.joinToString(" • "),
                     icon = when {
                         mime.contains("image") -> Icons.Default.Image
                         mime.contains("video") -> Icons.Default.Videocam
@@ -371,7 +422,9 @@ object FileScanner {
                         mime.contains("video") -> Color(0xFF7C4DFF)
                         else -> Color(0xFF00E5FF)
                     },
-                    path = path
+                    path = path,
+                    lastModified = dateMillis,
+                    size = sizeBytes
                 ))
                 count++
             }
