@@ -124,6 +124,15 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
     var showExtractionConflictDialog by mutableStateOf(false)
     var extractionConflicts by mutableStateOf<List<String>>(emptyList())
 
+    var transferQueue by mutableStateOf<List<FileItem>>(emptyList())
+        private set
+    var isMoveOperation by mutableStateOf(false)
+        private set
+    var isTransferMode by mutableStateOf(false)
+        private set
+    var showTransferConflictDialog by mutableStateOf(false)
+    var transferConflicts by mutableStateOf<List<String>>(emptyList())
+
     var isPickerMode by mutableStateOf(savedStateHandle.get<Boolean>("isPickerMode") ?: false)
     var pickerAllowMultiple by mutableStateOf(savedStateHandle.get<Boolean>("pickerAllowMultiple") ?: false)
     var pickerMimeFilter by mutableStateOf(savedStateHandle.get<String>("pickerMimeFilter") ?: "*/*")
@@ -997,6 +1006,21 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         updateExtractionMode(false)
     }
 
+    fun prepareTransfer(isMove: Boolean) {
+        transferQueue = selectedFiles.toList()
+        isMoveOperation = isMove
+        isTransferMode = true
+        clearSelection()
+    }
+
+    fun cancelTransfer() {
+        transferQueue = emptyList()
+        isTransferMode = false
+        isMoveOperation = false
+        showTransferConflictDialog = false
+        transferConflicts = emptyList()
+    }
+
     private fun resolveDestinationFile(
         destDir: File,
         desiredRelativePath: String,
@@ -1078,6 +1102,128 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
 
     fun performExtraction(context: android.content.Context) {
         startExtraction(context)
+    }
+
+    private fun getTransferConflicts(): List<String> {
+        val destPath = if (explorerPath.contains("!/")) {
+            explorerPath.substringBefore("!/").let { File(it).parent ?: "/storage/emulated/0" }
+        } else {
+            explorerPath
+        }
+        val destDir = File(destPath)
+        val conflicts = mutableListOf<String>()
+
+        transferQueue.forEach { item ->
+            val src = File(item.path)
+            if (File(destDir, src.name).exists()) {
+                conflicts.add(src.name)
+            }
+        }
+        return conflicts
+    }
+
+    fun startTransfer(context: android.content.Context) {
+        val conflicts = getTransferConflicts()
+        if (conflicts.isNotEmpty()) {
+            transferConflicts = conflicts
+            showTransferConflictDialog = true
+        } else {
+            executeTransfer(context, ConflictResolution.REPLACE)
+        }
+    }
+
+    fun executeTransfer(
+        context: android.content.Context, 
+        resolution: ConflictResolution = ConflictResolution.REPLACE
+    ) {
+        val destPath = if (explorerPath.contains("!/")) {
+            explorerPath.substringBefore("!/").let { File(it).parent ?: "/storage/emulated/0" }
+        } else {
+            explorerPath
+        }
+        val destDir = File(destPath)
+        val items = transferQueue
+        val isMove = isMoveOperation
+
+        transferQueue = emptyList()
+        isTransferMode = false
+        isMoveOperation = false
+        showTransferConflictDialog = false
+        transferConflicts = emptyList()
+
+        if (items.isEmpty()) return
+
+        val actionName = if (isMove) "Moving" else "Copying"
+        isDataLoading = true
+        android.widget.Toast.makeText(context, "$actionName files...", android.widget.Toast.LENGTH_SHORT).show()
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val affectedPaths = mutableListOf<String>()
+            var successCount = 0
+
+            try {
+                if (!destDir.exists()) destDir.mkdirs()
+
+                items.forEach { item ->
+                    val src = File(item.path)
+                    if (!src.exists()) return@forEach
+
+                    if (src.isDirectory && destDir.canonicalPath.startsWith(src.canonicalPath)) {
+                        return@forEach
+                    }
+
+                    val outFile = resolveDestinationFile(destDir, src.name, resolution)
+                    if (outFile != null) {
+                        if (isMove) {
+                            val moved = if (src.isDirectory) {
+                                src.renameTo(outFile) || (src.copyRecursively(outFile, overwrite = true) && src.deleteRecursively())
+                            } else {
+                                src.renameTo(outFile) || (try { src.copyTo(outFile, overwrite = true); src.delete() } catch (_: Exception) { false })
+                            }
+                            if (moved) {
+                                successCount++
+                                affectedPaths.add(src.absolutePath)
+                                affectedPaths.add(outFile.absolutePath)
+                            }
+                        } else {
+                            val copied = if (src.isDirectory) {
+                                src.copyRecursively(outFile, overwrite = (resolution == ConflictResolution.REPLACE))
+                            } else {
+                                try {
+                                    src.copyTo(outFile, overwrite = (resolution == ConflictResolution.REPLACE))
+                                    true
+                                } catch (_: Exception) { false }
+                            }
+                            if (copied) {
+                                successCount++
+                                affectedPaths.add(outFile.absolutePath)
+                            }
+                        }
+                    }
+                }
+
+                if (affectedPaths.isNotEmpty()) {
+                    android.media.MediaScannerConnection.scanFile(
+                        context,
+                        affectedPaths.toTypedArray(),
+                        null,
+                        null
+                    )
+                }
+
+                withContext(Dispatchers.Main) {
+                    isDataLoading = false
+                    val pastTense = if (isMove) "Moved" else "Copied"
+                    android.widget.Toast.makeText(context, "$pastTense $successCount items", android.widget.Toast.LENGTH_SHORT).show()
+                    loadExplorerFolder(explorerPath, context)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    isDataLoading = false
+                    android.widget.Toast.makeText(context, "Error: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        }
     }
 
     fun executeExtraction(context: android.content.Context, resolution: ConflictResolution = ConflictResolution.REPLACE) {
