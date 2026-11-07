@@ -87,6 +87,7 @@ class MainActivity : ComponentActivity() {
         handlePickerIntent(intent)
         viewModel.loadQuickPills(this)
         viewModel.loadPinnedPaths(this)
+        viewModel.loadFavoritePaths(this)
         viewModel.loadFolderCache(this)
         viewModel.initRecovery(cacheDir)
         viewModel.loadSettings(this)
