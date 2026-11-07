@@ -658,7 +658,25 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                         }
                         DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
                             DropdownMenuItem(
+                                text = { Text("Copy") },
+                                leadingIcon = { Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(18.dp)) },
+                                onClick = {
+                                    viewModel.prepareTransfer(isMove = false)
+                                    showMoreMenu = false
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Move") },
+                                leadingIcon = { Icon(Icons.Default.DriveFileMove, null, modifier = Modifier.size(18.dp)) },
+                                onClick = {
+                                    viewModel.prepareTransfer(isMove = true)
+                                    showMoreMenu = false
+                                }
+                            )
+                            HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+                            DropdownMenuItem(
                                 text = { Text("Select All") },
+                                leadingIcon = { Icon(Icons.Default.SelectAll, null, modifier = Modifier.size(18.dp)) },
                                 onClick = {
                                     viewModel.selectAll()
                                     showMoreMenu = false
@@ -666,6 +684,7 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                             )
                             DropdownMenuItem(
                                 text = { Text("Share") }, 
+                                leadingIcon = { Icon(Icons.Default.Share, null, modifier = Modifier.size(18.dp)) },
                                 onClick = {
                                     showMoreMenu = false
                                     selectedFiles.firstOrNull()?.let {
@@ -678,7 +697,11 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                                     }
                                 }
                             )
-                            DropdownMenuItem(text = { Text("Favourite") }, onClick = { showMoreMenu = false })
+                            DropdownMenuItem(
+                                text = { Text("Favourite") }, 
+                                leadingIcon = { Icon(Icons.Default.StarBorder, null, modifier = Modifier.size(18.dp)) },
+                                onClick = { showMoreMenu = false }
+                            )
                         }
                     }
                     IconButton(onClick = { viewModel.clearSelection() }) {
@@ -747,9 +770,58 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
             }
         }
 
-        if (viewModel.showExtractionConflictDialog) {
-            val conflictName = viewModel.extractionConflicts.firstOrNull() ?: "File"
-            val count = viewModel.extractionConflicts.size
+        // Sticky Transfer Bar (Copy / Move)
+        androidx.compose.animation.AnimatedVisibility(
+            visible = viewModel.isTransferMode,
+            enter = slideInVertically(initialOffsetY = { it }),
+            exit = slideOutVertically(targetOffsetY = { it }),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp)
+        ) {
+            val isMove = viewModel.isMoveOperation
+            val actionTitle = if (isMove) "Move here?" else "Copy here?"
+            val buttonColor = if (isMove) Color(0xFFFFD740) else Color(0xFF00E5FF)
+
+            Surface(
+                color = Color(0xFF1F2937),
+                shape = RoundedCornerShape(24.dp),
+                tonalElevation = 12.dp,
+                modifier = Modifier.fillMaxWidth(),
+                border = androidx.compose.foundation.BorderStroke(1.dp, buttonColor.copy(alpha = 0.5f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = actionTitle, 
+                        color = Color.White, 
+                        style = MaterialTheme.typography.labelLarge, 
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = { viewModel.cancelTransfer() },
+                        modifier = Modifier.padding(end = 8.dp)
+                    ) {
+                        Text("Cancel", color = Color.Gray)
+                    }
+                    Button(
+                        onClick = { viewModel.startTransfer(context) },
+                        colors = ButtonDefaults.buttonColors(containerColor = buttonColor)
+                    ) {
+                        Text(if (isMove) "Move" else "Copy", color = Color.Black, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        val showCollision = viewModel.showExtractionConflictDialog || viewModel.showTransferConflictDialog
+        if (showCollision) {
+            val isTransfer = viewModel.showTransferConflictDialog
+            val conflicts = if (isTransfer) viewModel.transferConflicts else viewModel.extractionConflicts
+            val conflictName = conflicts.firstOrNull() ?: "File"
+            val count = conflicts.size
             val message = if (count == 1) {
                 "\"$conflictName\" already exists in this folder. What would you like to do?"
             } else {
@@ -757,7 +829,10 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
             }
 
             AlertDialog(
-                onDismissRequest = { viewModel.showExtractionConflictDialog = false },
+                onDismissRequest = {
+                    if (isTransfer) viewModel.showTransferConflictDialog = false
+                    else viewModel.showExtractionConflictDialog = false
+                },
                 title = { Text("File Collision", color = Color.White) },
                 text = { Text(message, color = Color.Gray) },
                 confirmButton = {
@@ -767,18 +842,21 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         TextButton(onClick = {
-                            viewModel.executeExtraction(context, ConflictResolution.SKIP)
+                            if (isTransfer) viewModel.executeTransfer(context, ConflictResolution.SKIP)
+                            else viewModel.executeExtraction(context, ConflictResolution.SKIP)
                         }) {
                             Text("Skip", color = Color.Gray)
                         }
                         TextButton(onClick = {
-                            viewModel.executeExtraction(context, ConflictResolution.REPLACE)
+                            if (isTransfer) viewModel.executeTransfer(context, ConflictResolution.REPLACE)
+                            else viewModel.executeExtraction(context, ConflictResolution.REPLACE)
                         }) {
                             Text("Replace", color = Color(0xFFFF5252))
                         }
                         Button(
                             onClick = {
-                                viewModel.executeExtraction(context, ConflictResolution.KEEP_BOTH)
+                                if (isTransfer) viewModel.executeTransfer(context, ConflictResolution.KEEP_BOTH)
+                                else viewModel.executeExtraction(context, ConflictResolution.KEEP_BOTH)
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF69F0AE))
                         ) {
@@ -787,7 +865,10 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { viewModel.showExtractionConflictDialog = false }) {
+                    TextButton(onClick = {
+                        if (isTransfer) viewModel.showTransferConflictDialog = false
+                        else viewModel.showExtractionConflictDialog = false
+                    }) {
                         Text("Cancel")
                     }
                 }
