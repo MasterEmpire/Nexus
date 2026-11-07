@@ -19,7 +19,7 @@ import androidx.lifecycle.SavedStateHandle
 
 class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel() {
     // Persist basic UI state across process death
-    var currentView by mutableStateOf(savedStateHandle.get<String>("currentView") ?: "chat")
+    var currentView by mutableStateOf(savedStateHandle.get<String>("currentView") ?: "explorer")
     var explorerPath by mutableStateOf(savedStateHandle.get<String>("explorerPath") ?: "/storage/emulated/0")
     var currentSessionId by mutableStateOf(savedStateHandle.get<String>("currentSessionId"))
 
@@ -174,14 +174,33 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
     var executionProfile by mutableStateOf("Standard")
         private set
 
+    var defaultBootSection by mutableStateOf("File Manager")
+        private set
+
     fun loadSettings(context: android.content.Context) {
         val prefs = context.getSharedPreferences("conduit_settings", android.content.Context.MODE_PRIVATE)
         executionProfile = prefs.getString("exec_profile", "Standard") ?: "Standard"
+        defaultBootSection = prefs.getString("default_boot_section", "File Manager") ?: "File Manager"
+
+        if (savedStateHandle.get<String>("currentView") == null && !isPickerMode) {
+            when (defaultBootSection) {
+                "AI Chat" -> { currentView = "chat"; selectedTab = 0 }
+                "Manual Lab" -> { currentView = "manual" }
+                else -> { currentView = "explorer"; selectedTab = 1 }
+            }
+        }
+
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 executor.callAttr("set_profile", executionProfile)
             } catch(e: Exception) {}
         }
+    }
+
+    fun updateDefaultBootSection(context: android.content.Context, section: String) {
+        defaultBootSection = section
+        context.getSharedPreferences("conduit_settings", android.content.Context.MODE_PRIVATE)
+            .edit().putString("default_boot_section", section).apply()
     }
 
     fun updateExecutionProfile(context: android.content.Context, profile: String) {
@@ -215,7 +234,7 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
     var manualConsoleOutput by mutableStateOf("")
     var isManualRunning by mutableStateOf(false)
     var savedScripts by mutableStateOf<List<SavedScript>>(emptyList())
-    var selectedTab by mutableIntStateOf(0)
+    var selectedTab by mutableIntStateOf(if (savedStateHandle.get<String>("currentView") == "chat") 0 else 1)
     var quickPills by mutableStateOf<List<QuickPill>>(listOf(
         QuickPill(title = "List Files", content = "List all files in current directory"),
         QuickPill(title = "Storage Info", content = "Show me storage statistics")
