@@ -221,6 +221,7 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
     // Editor State
     var editingFile by mutableStateOf<File?>(null)
     var editorText = ""
+    var editorLines by mutableStateOf<List<String>>(emptyList())
     var hasUnsavedChanges by mutableStateOf(false)
     private var recoveryFile: File? = null
     var isEditLocked by mutableStateOf(true)
@@ -447,7 +448,9 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
             if (file.exists()) {
                 editingFile = file
                 if (recoveryFile?.exists() == true) {
-                    editorText = recoveryFile?.readText() ?: ""
+                    val text = recoveryFile?.readText() ?: ""
+                    editorText = text
+                    editorLines = text.lines()
                     hasUnsavedChanges = true
                 } else {
                     openFileForEditing(file)
@@ -1049,18 +1052,27 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val content = file.readText()
+                val rawLines = content.lines()
+                val safeLines = if (rawLines.any { it.length > 2000 }) {
+                    rawLines.flatMap { line ->
+                        if (line.length > 2000) line.chunked(2000) else listOf(line)
+                    }
+                } else rawLines
+
                 withContext(Dispatchers.Main) {
                     editingFile = file
                     savedStateHandle["editingFilePath"] = file.absolutePath
                     editorText = content
+                    editorLines = safeLines
                     hasUnsavedChanges = false
                     isEditLocked = true
-                    recoveryFile?.delete() // Clear old recovery on new file open
+                    recoveryFile?.delete()
                     isDataLoading = false
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     editorText = "Error reading file: ${e.message}"
+                    editorLines = listOf("Error reading file: ${e.message}")
                     isDataLoading = false
                 }
             }
@@ -1072,6 +1084,7 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         savedStateHandle.remove<String>("editingFilePath")
         recoveryFile?.delete()
         editorText = ""
+        editorLines = emptyList()
         hasUnsavedChanges = false
     }
 
@@ -1080,7 +1093,16 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
             viewModelScope.launch(Dispatchers.IO) {
                 try {
                     file.writeText(textToSave)
+                    val rawLines = textToSave.lines()
+                    val safeLines = if (rawLines.any { it.length > 2000 }) {
+                        rawLines.flatMap { line ->
+                            if (line.length > 2000) line.chunked(2000) else listOf(line)
+                        }
+                    } else rawLines
+
                     withContext(Dispatchers.Main) {
+                        editorText = textToSave
+                        editorLines = safeLines
                         hasUnsavedChanges = false
                         isEditLocked = true
                     }
