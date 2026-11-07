@@ -121,6 +121,9 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
     var isExtractionMode by mutableStateOf(savedStateHandle.get<Boolean>("isExtractionMode") ?: false)
         private set
 
+    var showExtractionConflictDialog by mutableStateOf(false)
+    var extractionConflicts by mutableStateOf<List<String>>(emptyList())
+
     var isPickerMode by mutableStateOf(savedStateHandle.get<Boolean>("isPickerMode") ?: false)
     var pickerAllowMultiple by mutableStateOf(savedStateHandle.get<Boolean>("pickerAllowMultiple") ?: false)
     var pickerMimeFilter by mutableStateOf(savedStateHandle.get<String>("pickerMimeFilter") ?: "*/*")
@@ -994,54 +997,193 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         updateExtractionMode(false)
     }
 
+    private fun resolveDestinationFile(
+        destDir: File,
+        desiredRelativePath: String,
+        resolution: ConflictResolution
+    ): File? {
+        val target = File(destDir, desiredRelativePath)
+        if (!target.exists()) return target
+
+        return when (resolution) {
+            ConflictResolution.REPLACE -> target
+            ConflictResolution.SKIP -> null
+            ConflictResolution.KEEP_BOTH -> {
+                val parentDir = target.parentFile ?: destDir
+                val fileName = target.name
+                val nameWithoutExt = if (fileName.contains(".")) fileName.substringBeforeLast(".") else fileName
+                val ext = if (fileName.contains(".")) "." + fileName.substringAfterLast(".") else ""
+                var counter = 1
+                var candidate = File(parentDir, "$nameWithoutExt($counter)$ext")
+                while (candidate.exists()) {
+                    counter++
+                    candidate = File(parentDir, "$nameWithoutExt($counter)$ext")
+                }
+                candidate
+            }
+        }
+    }
+
+    private fun getExtractionConflicts(): List<String> {
+        val destPath = if (explorerPath.contains("!/")) {
+            explorerPath.substringBefore("!/").let { File(it).parent ?: "/storage/emulated/0" }
+        } else {
+            explorerPath
+        }
+        val destDir = File(destPath)
+        val conflicts = mutableListOf<String>()
+
+        extractionQueue.forEach { item ->
+            val isVirtual = item.path.contains("!/")
+            if (isVirtual) {
+                val internalPath = item.path.substringAfter("!/").trimStart('/')
+                val isDir = internalPath.endsWith("/") || item.meta.contains("Folder")
+                if (!isDir) {
+                    val fileName = File(internalPath).name
+                    if (File(destDir, fileName).exists()) {
+                        conflicts.add(fileName)
+                    }
+                } else {
+                    val folderName = File(internalPath.removeSuffix("/")).name
+                    if (File(destDir, folderName).exists()) {
+                        conflicts.add(folderName)
+                    }
+                }
+            } else {
+                val file = File(item.path)
+                if (file.extension.lowercase() == "zip") {
+                    val zipNameWithoutExt = file.nameWithoutExtension
+                    if (File(destDir, zipNameWithoutExt).exists()) {
+                        conflicts.add(zipNameWithoutExt)
+                    }
+                } else {
+                    if (File(destDir, file.name).exists()) {
+                        conflicts.add(file.name)
+                    }
+                }
+            }
+        }
+        return conflicts
+    }
+
+    fun startExtraction(context: android.content.Context) {
+        val conflicts = getExtractionConflicts()
+        if (conflicts.isNotEmpty()) {
+            extractionConflicts = conflicts
+            showExtractionConflictDialog = true
+        } else {
+            executeExtraction(context, ConflictResolution.REPLACE)
+        }
+    }
+
     fun performExtraction(context: android.content.Context) {
-        val destination = explorerPath
+        startExtraction(context)
+    }
+
+    fun executeExtraction(context: android.content.Context, resolution: ConflictResolution = ConflictResolution.REPLACE) {
+        val destPath = if (explorerPath.contains("!/")) {
+            explorerPath.substringBefore("!/").let { File(it).parent ?: "/storage/emulated/0" }
+        } else {
+            explorerPath
+        }
+        val destDir = File(destPath)
         val items = extractionQueue
         updateExtractionMode(false)
         extractionQueue = emptyList()
-        
-        // Give immediate UI feedback
+        showExtractionConflictDialog = false
+        extractionConflicts = emptyList()
+
+        if (items.isEmpty()) return
+
         isDataLoading = true
         android.widget.Toast.makeText(context, "Extracting...", android.widget.Toast.LENGTH_SHORT).show()
-        
+
         viewModelScope.launch(Dispatchers.IO) {
+            val extractedPaths = mutableListOf<String>()
             try {
+                if (!destDir.exists()) destDir.mkdirs()
+
                 items.forEach { item ->
                     val isVirtual = item.path.contains("!/")
                     val zipPath = if (isVirtual) item.path.substringBefore("!/") else item.path
-                    val internalPath = if (isVirtual) item.path.substringAfter("!/") else ""
-                    
+                    val internalPath = if (isVirtual) item.path.substringAfter("!/").trimStart('/') else ""
+                    val isSingleVirtualFile = isVirtual && !internalPath.endsWith("/") && !item.meta.contains("Folder")
+
                     ZipFile(File(zipPath)).use { zip ->
                         val entries = zip.entries()
                         while (entries.hasMoreElements()) {
                             val entry = entries.nextElement()
-                            
                             var entryName = entry.name.replace("\\", "/")
                             while (entryName.contains("//")) entryName = entryName.replace("//", "/")
                             while (entryName.startsWith("/")) entryName = entryName.substring(1)
                             while (entryName.startsWith("./")) entryName = entryName.substring(2)
 
-                            if (entryName.startsWith(internalPath)) {
-                                val relativePath = if (internalPath.isEmpty()) entryName else entryName.substring(internalPath.length)
-                                if (relativePath.isEmpty()) continue
-                                
-                                val outFile = File(destination, relativePath)
+                            if (isSingleVirtualFile) {
+                                if (entryName == internalPath) {
+                                    val fileName = File(internalPath).name
+                                    val outFile = resolveDestinationFile(destDir, fileName, resolution)
+                                    if (outFile != null) {
+                                        outFile.parentFile?.mkdirs()
+                                        zip.getInputStream(entry).use { input ->
+                                            outFile.outputStream().use { output -> input.copyTo(output) }
+                                        }
+                                        extractedPaths.add(outFile.absolutePath)
+                                    }
+                                }
+                            } else if (isVirtual) {
+                                val cleanFolder = internalPath.removeSuffix("/")
+                                if (entryName.startsWith(cleanFolder)) {
+                                    val folderBase = File(cleanFolder).name
+                                    val subPath = if (entryName == cleanFolder || entryName == "$cleanFolder/") {
+                                        ""
+                                    } else {
+                                        entryName.removePrefix(cleanFolder).removePrefix("/")
+                                    }
+                                    val relPath = if (subPath.isEmpty()) folderBase else "$folderBase/$subPath"
+                                    if (entry.isDirectory || entryName.endsWith("/")) {
+                                        File(destDir, relPath).mkdirs()
+                                    } else {
+                                        val outFile = resolveDestinationFile(destDir, relPath, resolution)
+                                        if (outFile != null) {
+                                            outFile.parentFile?.mkdirs()
+                                            zip.getInputStream(entry).use { input ->
+                                                outFile.outputStream().use { output -> input.copyTo(output) }
+                                            }
+                                            extractedPaths.add(outFile.absolutePath)
+                                        }
+                                    }
+                                }
+                            } else {
                                 if (entry.isDirectory || entryName.endsWith("/")) {
-                                    outFile.mkdirs()
+                                    File(destDir, entryName).mkdirs()
                                 } else {
-                                    outFile.parentFile?.mkdirs()
-                                    zip.getInputStream(entry).use { input ->
-                                        outFile.outputStream().use { output -> input.copyTo(output) }
+                                    val outFile = resolveDestinationFile(destDir, entryName, resolution)
+                                    if (outFile != null) {
+                                        outFile.parentFile?.mkdirs()
+                                        zip.getInputStream(entry).use { input ->
+                                            outFile.outputStream().use { output -> input.copyTo(output) }
+                                        }
+                                        extractedPaths.add(outFile.absolutePath)
                                     }
                                 }
                             }
                         }
                     }
                 }
+
+                if (extractedPaths.isNotEmpty()) {
+                    android.media.MediaScannerConnection.scanFile(
+                        context,
+                        extractedPaths.toTypedArray(),
+                        null,
+                        null
+                    )
+                }
+
                 withContext(Dispatchers.Main) {
                     isDataLoading = false
-                    android.widget.Toast.makeText(context, "Extraction complete", android.widget.Toast.LENGTH_SHORT).show()
-                    loadExplorerFolder(explorerPath)
+                    android.widget.Toast.makeText(context, "Extraction complete (${extractedPaths.size} files)", android.widget.Toast.LENGTH_SHORT).show()
+                    loadExplorerFolder(explorerPath, context)
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
