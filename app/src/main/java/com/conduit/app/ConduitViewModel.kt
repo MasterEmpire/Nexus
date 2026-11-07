@@ -218,6 +218,13 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
     var showExtractionConflictDialog by mutableStateOf(false)
     var extractionConflicts by mutableStateOf<List<String>>(emptyList())
 
+    var extensionDefaults by mutableStateOf<Map<String, String>>(emptyMap())
+        private set
+    var pendingOpenFile by mutableStateOf<File?>(null)
+    var pendingOpenIntent by mutableStateOf<android.content.Intent?>(null)
+    var pendingAppOptions by mutableStateOf<List<AppOption>>(emptyList())
+    var showAppChooserDialog by mutableStateOf(false)
+
     var transferQueue by mutableStateOf<List<FileItem>>(emptyList())
         private set
     var isMoveOperation by mutableStateOf(false)
@@ -300,6 +307,67 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
             try {
                 executor.callAttr("set_profile", executionProfile)
             } catch(e: Exception) {}
+        }
+        loadExtensionDefaults(context)
+    }
+
+    fun loadExtensionDefaults(context: android.content.Context) {
+        val file = File(context.filesDir, "extension_defaults.json")
+        if (file.exists()) {
+            try {
+                val json = org.json.JSONObject(file.readText())
+                val map = mutableMapOf<String, String>()
+                json.keys().forEach { ext ->
+                    map[ext] = json.getString(ext)
+                }
+                extensionDefaults = map
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun saveExtensionDefaults(context: android.content.Context) {
+        val file = File(context.filesDir, "extension_defaults.json")
+        val json = org.json.JSONObject()
+        extensionDefaults.forEach { (ext, pkg) -> json.put(ext, pkg) }
+        viewModelScope.launch(Dispatchers.IO) {
+            try { file.writeText(json.toString()) } catch (_: Exception) {}
+        }
+    }
+
+    fun setExtensionDefault(context: android.content.Context, ext: String, packageName: String) {
+        extensionDefaults = extensionDefaults + (ext.lowercase() to packageName)
+        saveExtensionDefaults(context)
+    }
+
+    fun clearExtensionDefault(context: android.content.Context, ext: String) {
+        extensionDefaults = extensionDefaults - ext.lowercase()
+        saveExtensionDefaults(context)
+    }
+
+    fun clearAllExtensionDefaults(context: android.content.Context) {
+        extensionDefaults = emptyMap()
+        saveExtensionDefaults(context)
+    }
+
+    fun launchPendingApp(context: android.content.Context, packageName: String, saveAsDefault: Boolean) {
+        val file = pendingOpenFile ?: return
+        val intent = pendingOpenIntent ?: return
+        val ext = file.extension.lowercase()
+
+        if (saveAsDefault && ext.isNotBlank()) {
+            setExtensionDefault(context, ext, packageName)
+        }
+
+        intent.setPackage(packageName)
+        try {
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            android.widget.Toast.makeText(context, "Failed to launch app: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+        } finally {
+            showAppChooserDialog = false
+            pendingOpenFile = null
+            pendingOpenIntent = null
+            pendingAppOptions = emptyList()
         }
     }
 
@@ -1086,24 +1154,67 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                 openFileForEditing(file)
             } else {
                 try {
-                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW)
                     val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
                     val mimeType = context.contentResolver.getType(uri) ?: "*/*"
-                    
-                    val chooserTitle = when {
-                        mimeType.startsWith("audio/") -> "Listen to ${file.name}"
-                        mimeType.startsWith("video/") -> "Watch ${file.name}"
-                        mimeType.startsWith("image/") -> "View ${file.name}"
-                        file.extension.lowercase() == "pdf" -> "Read ${file.name}"
-                        file.extension.lowercase() == "apk" -> "Install ${file.name}"
-                        else -> "Open ${file.name} with..."
+                    val ext = file.extension.lowercase()
+
+                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                        setDataAndType(uri, mimeType)
+                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
 
-                    intent.setDataAndType(uri, mimeType)
-                    intent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    context.startActivity(android.content.Intent.createChooser(intent, chooserTitle))
+                    val defaultPackage = extensionDefaults[ext]
+                    if (defaultPackage != null) {
+                        val isInstalled = try {
+                            context.packageManager.getPackageInfo(defaultPackage, 0)
+                            true
+                        } catch (_: Exception) { false }
+
+                        if (isInstalled) {
+                            intent.setPackage(defaultPackage)
+                            try {
+                                context.startActivity(intent)
+                                return
+                            } catch (_: Exception) {}
+                        } else {
+                            clearExtensionDefault(context, ext)
+                        }
+                    }
+
+                    val resolveInfos = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                        context.packageManager.queryIntentActivities(
+                            intent,
+                            android.content.pm.PackageManager.ResolveInfoFlags.of(0)
+                        )
+                    } else {
+                        context.packageManager.queryIntentActivities(intent, 0)
+                    }
+
+                    if (resolveInfos.isEmpty()) {
+                        android.widget.Toast.makeText(context, "No app found to open this file", android.widget.Toast.LENGTH_SHORT).show()
+                        return
+                    }
+
+                    if (resolveInfos.size == 1) {
+                        intent.setPackage(resolveInfos.first().activityInfo.packageName)
+                        context.startActivity(intent)
+                        return
+                    }
+
+                    val options = resolveInfos.map { ri ->
+                        AppOption(
+                            packageName = ri.activityInfo.packageName,
+                            label = ri.loadLabel(context.packageManager).toString(),
+                            icon = ri.loadIcon(context.packageManager)
+                        )
+                    }.distinctBy { it.packageName }
+
+                    pendingOpenFile = file
+                    pendingOpenIntent = intent
+                    pendingAppOptions = options
+                    showAppChooserDialog = true
                 } catch (e: Exception) {
-                    android.widget.Toast.makeText(context, "No app found to open this file", android.widget.Toast.LENGTH_SHORT).show()
+                    android.widget.Toast.makeText(context, "Error opening file: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
         }
