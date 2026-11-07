@@ -16,6 +16,12 @@ enum class SortOrder { NAME_ASC, NAME_DESC, DATE_NEW, DATE_OLD, SIZE_LARGE, SIZE
 
 enum class ConflictResolution { REPLACE, SKIP, KEEP_BOTH }
 
+data class AppOption(
+    val packageName: String,
+    val label: String,
+    val icon: android.graphics.drawable.Drawable
+)
+
 data class Cat(val name: String, val icon: ImageVector, val color: Color)
 
 data class FileItem(
