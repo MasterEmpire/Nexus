@@ -1154,9 +1154,10 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                 openFileForEditing(file)
             } else {
                 try {
-                    val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
-                    val mimeType = context.contentResolver.getType(uri) ?: "*/*"
                     val ext = file.extension.lowercase()
+                    val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
+                    val explicitMime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+                    val mimeType = explicitMime ?: context.contentResolver.getType(uri) ?: "*/*"
 
                     val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
                         setDataAndType(uri, mimeType)
