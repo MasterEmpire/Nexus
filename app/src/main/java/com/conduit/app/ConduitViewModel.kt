@@ -233,6 +233,9 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
     var manualCode by mutableStateOf("import os\nprint('Hello Nexus')")
     var manualConsoleOutput by mutableStateOf("")
     var isManualRunning by mutableStateOf(false)
+    var isManualAwaitingInput by mutableStateOf(false)
+    var manualInputPrompt by mutableStateOf("")
+    var manualInputText by mutableStateOf("")
     var savedScripts by mutableStateOf<List<SavedScript>>(emptyList())
     var selectedTab by mutableIntStateOf(if (savedStateHandle.get<String>("currentView") == "chat") 0 else 1)
     var quickPills by mutableStateOf<List<QuickPill>>(listOf(
@@ -338,6 +341,9 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         if (ConduitExecutionService.isRunning) return
         manualConsoleOutput = ""
         isManualRunning = true
+        isManualAwaitingInput = false
+        manualInputPrompt = ""
+        manualInputText = ""
         
         // Setup the bridge listeners
         ConduitExecutionService.outputListener = { text ->
@@ -345,10 +351,19 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                 manualConsoleOutput += text
             }
         }
+
+        ConduitExecutionService.inputRequestListener = { prompt ->
+            viewModelScope.launch(Dispatchers.Main) {
+                isManualAwaitingInput = true
+                manualInputPrompt = prompt
+            }
+        }
         
         ConduitExecutionService.onFinished = {
             viewModelScope.launch(Dispatchers.Main) {
                 isManualRunning = false
+                isManualAwaitingInput = false
+                manualInputPrompt = ""
             }
         }
 
@@ -361,6 +376,15 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         } else {
             context.startService(intent)
         }
+    }
+
+    fun sendManualInput(text: String) {
+        if (!isManualAwaitingInput) return
+        manualConsoleOutput += "$text\n"
+        ConduitExecutionService.provideInput(text)
+        isManualAwaitingInput = false
+        manualInputPrompt = ""
+        manualInputText = ""
     }
 
     // Storage Stats
@@ -393,14 +417,23 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         // Re-hook to service if it's already running from a previous process
         if (ConduitExecutionService.isRunning) {
             isManualRunning = true
+            isManualAwaitingInput = ConduitExecutionService.isWaitingForInput
             ConduitExecutionService.outputListener = { text ->
                 viewModelScope.launch(Dispatchers.Main) {
                     manualConsoleOutput += text
                 }
             }
+            ConduitExecutionService.inputRequestListener = { prompt ->
+                viewModelScope.launch(Dispatchers.Main) {
+                    isManualAwaitingInput = true
+                    manualInputPrompt = prompt
+                }
+            }
             ConduitExecutionService.onFinished = {
                 viewModelScope.launch(Dispatchers.Main) {
                     isManualRunning = false
+                    isManualAwaitingInput = false
+                    manualInputPrompt = ""
                 }
             }
         }
