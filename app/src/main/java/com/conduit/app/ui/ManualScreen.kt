@@ -1,7 +1,14 @@
 package com.conduit.nexus
 
+import androidx.compose.animation.*
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.border
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.ImeAction
 import kotlinx.coroutines.launch
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -167,7 +174,18 @@ fun ManualScreen(viewModel: ConduitViewModel, onRun: () -> Unit) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Console Output", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Console Output", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+                        if (viewModel.isManualAwaitingInput) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "Awaiting STDIN", 
+                                style = MaterialTheme.typography.labelSmall, 
+                                color = Color(0xFF00E5FF), 
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                     IconButton(modifier = Modifier.size(24.dp), onClick = {
                         val clip = ClipData.newPlainText("Console Output", viewModel.manualConsoleOutput)
                         clipboard.setPrimaryClip(clip)
@@ -176,13 +194,61 @@ fun ManualScreen(viewModel: ConduitViewModel, onRun: () -> Unit) {
                         Icon(Icons.Default.ContentCopy, contentDescription = "Copy Output", modifier = Modifier.size(16.dp))
                     }
                 }
+                val consoleScrollState = rememberScrollState()
+                LaunchedEffect(viewModel.manualConsoleOutput) {
+                    consoleScrollState.animateScrollTo(consoleScrollState.maxValue)
+                }
+
                 Box(modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black, RoundedCornerShape(4.dp))
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .background(Color.Black, RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp, bottomStart = if (viewModel.isManualAwaitingInput) 0.dp else 4.dp, bottomEnd = if (viewModel.isManualAwaitingInput) 0.dp else 4.dp))
                     .padding(8.dp)
-                    .verticalScroll(rememberScrollState())) {
+                    .verticalScroll(consoleScrollState)) {
                     SelectionContainer {
                         Text(viewModel.manualConsoleOutput, color = Color(0xFF00FF00), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+
+                AnimatedVisibility(
+                    visible = viewModel.isManualAwaitingInput,
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF161B22), RoundedCornerShape(bottomStart = 4.dp, bottomEnd = 4.dp))
+                            .border(1.dp, Color(0xFF00E5FF).copy(alpha = 0.5f), RoundedCornerShape(bottomStart = 4.dp, bottomEnd = 4.dp))
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (viewModel.manualInputPrompt.isNotBlank()) viewModel.manualInputPrompt.trim() else "STDIN >",
+                            color = Color(0xFF00E5FF),
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        BasicTextField(
+                            value = viewModel.manualInputText,
+                            onValueChange = { viewModel.manualInputText = it },
+                            modifier = Modifier.weight(1f),
+                            textStyle = TextStyle(color = Color.White, fontFamily = FontFamily.Monospace, fontSize = 13.sp),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                            keyboardActions = KeyboardActions(onSend = {
+                                viewModel.sendManualInput(viewModel.manualInputText)
+                            }),
+                            cursorBrush = SolidColor(Color(0xFF00E5FF))
+                        )
+                        IconButton(
+                            onClick = { viewModel.sendManualInput(viewModel.manualInputText) },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(Icons.Default.Send, contentDescription = "Send STDIN", tint = Color(0xFF00E5FF), modifier = Modifier.size(16.dp))
+                        }
                     }
                 }
             }
@@ -197,7 +263,7 @@ fun ManualScreen(viewModel: ConduitViewModel, onRun: () -> Unit) {
                 if (viewModel.isManualRunning) {
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(" Executing...")
+                    Text(if (viewModel.isManualAwaitingInput) " Waiting for Input..." else " Executing...")
                 } else {
                     Icon(Icons.Default.PlayArrow, null)
                     Text(" Run Script")
