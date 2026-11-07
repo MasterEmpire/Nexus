@@ -2,6 +2,7 @@ import sys
 import io
 import traceback
 import os
+import builtins
 
 # Initialize to user storage immediately
 try:
@@ -39,24 +40,14 @@ def reset_state():
 
 import ast
 
-def run_code(code, output_callback=None):
+def run_code(code, output_callback=None, input_callback=None):
     global agent_globals
     if current_profile == 'Isolated':
         agent_globals = {'__name__': '__main__'}
         try: os.chdir('/storage/emulated/0')
         except: pass
 
-    class StreamToCallback(io.RawIOBase):
-        def write(self, b):
-            # b might be bytes or string depending on the caller
-            s = b.decode('utf-8') if isinstance(b, bytes) else str(b)
-            if output_callback:
-                try:
-                    output_callback.onOutput(s)
-                except: pass
-            return len(s)
-
-    # We use a custom writer that mimics a stream
+    # Custom writer that mimics a stream
     class FastStream:
         def write(self, s):
             if output_callback:
@@ -64,9 +55,37 @@ def run_code(code, output_callback=None):
                 except: pass
         def flush(self): pass
 
+    # Custom reader that bridges stdin to Kotlin
+    class FastStdin(io.TextIOBase):
+        def readline(self):
+            if input_callback:
+                try:
+                    res = input_callback.onInputRequested("")
+                    return str(res) if str(res).endswith('\n') else str(res) + '\n'
+                except Exception:
+                    return '\n'
+            return '\n'
+
     output = FastStream()
-    old_stdout, old_stderr = sys.stdout, sys.stderr
+    fast_stdin = FastStdin()
+    old_stdout, old_stderr, old_stdin = sys.stdout, sys.stderr, sys.stdin
+    old_input = builtins.input
+
+    def custom_input(prompt=""):
+        if prompt and output_callback:
+            try: output_callback.onOutput(str(prompt))
+            except: pass
+        if input_callback:
+            try:
+                res = input_callback.onInputRequested(str(prompt))
+                return str(res).rstrip('\r\n')
+            except Exception:
+                return ""
+        return ""
+
     sys.stdout, sys.stderr = output, output
+    sys.stdin = fast_stdin
+    builtins.input = custom_input
     
     try:
         # Clean up the code and parse it into an AST
@@ -99,6 +118,8 @@ def run_code(code, output_callback=None):
         return err
     finally:
         sys.stdout, sys.stderr = old_stdout, old_stderr
+        sys.stdin = old_stdin
+        builtins.input = old_input
 
 def get_structure(startpath='/storage/emulated/0', max_depth=2):
     import os
