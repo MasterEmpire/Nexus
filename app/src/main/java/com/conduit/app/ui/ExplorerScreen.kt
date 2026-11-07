@@ -838,64 +838,21 @@ fun ExpandingSearch(isExpanded: Boolean, query: String, onQueryChange: (String) 
 @Composable
 fun FileRow(file: FileItem, isHighlighted: Boolean = false, isPinned: Boolean = false, onClick: () -> Unit = {}, onLongClick: () -> Unit = {}) {
     val context = LocalContext.current
-    var mediaThumbnail by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
-    val ext = file.name.substringAfterLast('.', "").lowercase()
-    val isApk = ext == "apk"
-    val isImg = listOf("jpg", "jpeg", "png", "webp", "gif", "bmp").contains(ext)
-    val isVid = listOf("mp4", "mkv", "avi", "mov", "webm").contains(ext)
+    val ext = remember(file.name) { file.name.substringAfterLast('.', "").lowercase() }
+    val isVid = remember(ext) { listOf("mp4", "mkv", "avi", "mov", "webm").contains(ext) }
+    val isMedia = remember(ext) {
+        ext == "apk" || isVid || listOf("jpg", "jpeg", "png", "webp", "gif", "bmp").contains(ext)
+    }
+    val cacheKey = remember(file.path, file.lastModified, file.size) { ThumbnailLoader.getCacheKey(file) }
+    var mediaThumbnail by remember(cacheKey) { mutableStateOf(ThumbnailLoader.getFromCache(cacheKey)) }
 
-    if ((isApk || isImg || isVid) && mediaThumbnail == null) {
-        LaunchedEffect(file.path) {
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                try {
-                    val bitmap: android.graphics.Bitmap? = when {
-                        isApk -> {
-                            val pm = context.packageManager
-                            pm.getPackageArchiveInfo(file.path, 0)?.let { pi ->
-                                pi.applicationInfo.sourceDir = file.path
-                                pi.applicationInfo.publicSourceDir = file.path
-                                val drawable = pi.applicationInfo.loadIcon(pm)
-                                if (drawable is android.graphics.drawable.BitmapDrawable) drawable.bitmap
-                                else {
-                                    val bmp = android.graphics.Bitmap.createBitmap(96, 96, android.graphics.Bitmap.Config.ARGB_8888)
-                                    val canvas = android.graphics.Canvas(bmp)
-                                    drawable.setBounds(0, 0, 96, 96)
-                                    drawable.draw(canvas)
-                                    bmp
-                                }
-                            }
-                        }
-                        isImg -> {
-                            val options = android.graphics.BitmapFactory.Options().apply {
-                                inJustDecodeBounds = true
-                            }
-                            android.graphics.BitmapFactory.decodeFile(file.path, options)
-                            options.inSampleSize = 4 // Heavily downsample for icons
-                            options.inJustDecodeBounds = false
-                            android.graphics.BitmapFactory.decodeFile(file.path, options)
-                        }
-                        isVid -> {
-                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                                try { 
-                                    context.contentResolver.loadThumbnail(android.net.Uri.fromFile(java.io.File(file.path)), android.util.Size(96, 96), null)
-                                } catch(e: Exception) {
-                                    android.media.ThumbnailUtils.createVideoThumbnail(file.path, android.provider.MediaStore.Video.Thumbnails.MINI_KIND)
-                                }
-                            } else {
-                                android.media.ThumbnailUtils.createVideoThumbnail(file.path, android.provider.MediaStore.Video.Thumbnails.MINI_KIND)
-                            }
-                        }
-                        else -> null
-                    }
-
-                    bitmap?.let {
-                        val scaled = android.graphics.Bitmap.createScaledBitmap(it, 96, 96, true)
-                        val imageBitmap = scaled.asImageBitmap()
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                            mediaThumbnail = imageBitmap
-                        }
-                    }
-                } catch (e: Exception) {}
+    if (isMedia && mediaThumbnail == null) {
+        LaunchedEffect(cacheKey) {
+            val bitmap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                ThumbnailLoader.loadThumbnail(context, file, targetSize = 144)
+            }
+            if (bitmap != null) {
+                mediaThumbnail = bitmap
             }
         }
     }
@@ -903,30 +860,63 @@ fun FileRow(file: FileItem, isHighlighted: Boolean = false, isPinned: Boolean = 
     Row(
         modifier = Modifier.fillMaxWidth()
             .then(
-                if (isHighlighted) Modifier.border(1.dp, Color(0xFF00E5FF), RoundedCornerShape(8.dp))
+                if (isHighlighted) Modifier.border(1.dp, Color(0xFF00E5FF), RoundedCornerShape(10.dp))
                 else Modifier
             )
             .background(
                 if (isHighlighted) Color(0xFF00E5FF).copy(alpha = 0.1f) 
                 else Color.White.copy(alpha = 0.03f), 
-                RoundedCornerShape(8.dp)
+                RoundedCornerShape(10.dp)
             )
             .combinedClickable(
                 onClick = { onClick() },
                 onLongClick = { onLongClick() }
             )
-            .padding(vertical = 6.dp, horizontal = 10.dp),
+            .padding(vertical = 8.dp, horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (mediaThumbnail != null) {
-            Image(
-                bitmap = mediaThumbnail!!,
-                contentDescription = "Thumbnail",
-                modifier = Modifier.size(22.dp).clip(RoundedCornerShape(4.dp)),
-                contentScale = ContentScale.Crop
-            )
+            Box(
+                modifier = Modifier
+                    .size(46.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color.Black.copy(alpha = 0.4f))
+                    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    bitmap = mediaThumbnail!!,
+                    contentDescription = "Thumbnail",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+                if (isVid) {
+                    Box(
+                        modifier = Modifier
+                            .size(22.dp)
+                            .background(Color.Black.copy(alpha = 0.6f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+            }
         } else {
-            Icon(file.icon, null, tint = file.color, modifier = Modifier.size(22.dp))
+            Box(
+                modifier = Modifier
+                    .size(46.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(file.color.copy(alpha = 0.12f))
+                    .border(1.dp, file.color.copy(alpha = 0.25f), RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(file.icon, null, tint = file.color, modifier = Modifier.size(24.dp))
+            }
         }
         Spacer(modifier = Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
@@ -934,6 +924,7 @@ fun FileRow(file: FileItem, isHighlighted: Boolean = false, isPinned: Boolean = 
                 text = file.name, 
                 color = Color.White, 
                 fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
