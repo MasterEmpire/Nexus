@@ -1279,7 +1279,7 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         }
     }
 
-    private fun getExtractionConflicts(): List<String> {
+    private fun detectExtractionConflicts(): List<String> {
         val destPath = if (explorerPath.contains("!/")) {
             explorerPath.substringBefore("!/").let { File(it).parent ?: "/storage/emulated/0" }
         } else {
@@ -1322,7 +1322,7 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
     }
 
     fun startExtraction(context: android.content.Context) {
-        val conflicts = getExtractionConflicts()
+        val conflicts = detectExtractionConflicts()
         if (conflicts.isNotEmpty()) {
             extractionConflicts = conflicts
             showExtractionConflictDialog = true
@@ -1335,7 +1335,7 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         startExtraction(context)
     }
 
-    private fun getTransferConflicts(): List<String> {
+    private fun detectTransferConflicts(): List<String> {
         val destPath = if (explorerPath.contains("!/")) {
             explorerPath.substringBefore("!/").let { File(it).parent ?: "/storage/emulated/0" }
         } else {
@@ -1354,7 +1354,7 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
     }
 
     fun startTransfer(context: android.content.Context) {
-        val conflicts = getTransferConflicts()
+        val conflicts = detectTransferConflicts()
         if (conflicts.isNotEmpty()) {
             transferConflicts = conflicts
             showTransferConflictDialog = true
