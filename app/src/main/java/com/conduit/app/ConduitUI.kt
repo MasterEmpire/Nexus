@@ -94,6 +94,14 @@ fun ConduitIDE(viewModel: ConduitViewModel) {
             Scaffold(
             topBar = {
                 TopAppBar(
+                    modifier = Modifier.clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null
+                    ) {
+                        if (viewModel.isSearching) {
+                            viewModel.isSearching = false
+                        }
+                    },
                     title = {
                         androidx.compose.animation.AnimatedVisibility(
                             visible = !viewModel.isSearching,
