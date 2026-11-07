@@ -23,13 +23,19 @@ fun SidebarContent(
     onExplorerClick: () -> Unit,
     onManualClick: () -> Unit,
     onInterpreterClick: () -> Unit,
-    onChatNavClick: () -> Unit
+    onChatNavClick: () -> Unit,
+    onSettingsClick: () -> Unit = {}
 ) {
     Column(modifier = Modifier.padding(16.dp).fillMaxHeight()) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Sessions", style = MaterialTheme.typography.titleMedium)
-            IconButton(onClick = onNewChatClick) {
-                Icon(Icons.Default.Add, contentDescription = "New Chat")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onSettingsClick) {
+                    Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.Gray)
+                }
+                IconButton(onClick = onNewChatClick) {
+                    Icon(Icons.Default.Add, contentDescription = "New Chat")
+                }
             }
         }
         
