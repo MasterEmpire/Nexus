@@ -44,6 +44,11 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
     var pinnedPaths by mutableStateOf<Set<String>>(emptySet())
         private set
 
+    var favoritePaths by mutableStateOf<Set<String>>(emptySet())
+        private set
+    var dashboardListMode by mutableStateOf("Recent")
+    var dashboardFavoriteFiles by mutableStateOf<List<FileItem>>(emptyList())
+
     // Cache stores: Path -> Pair(LastModifiedTimestamp, ItemCount)
     var folderCountCache = mutableMapOf<String, Pair<Long, Int>>()
 
@@ -96,6 +101,95 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         savePinnedPaths(context)
         clearSelection()
         loadExplorerFolder(explorerPath)
+    }
+
+    fun loadFavoritePaths(context: android.content.Context) {
+        val file = File(context.filesDir, "favorites.json")
+        if (file.exists()) {
+            try {
+                val json = org.json.JSONArray(file.readText())
+                val set = mutableSetOf<String>()
+                for (i in 0 until json.length()) set.add(json.getString(i))
+                favoritePaths = set
+            } catch (_: Exception) {}
+        }
+        refreshFavorites(context)
+    }
+
+    fun saveFavoritePaths(context: android.content.Context) {
+        val file = File(context.filesDir, "favorites.json")
+        val json = org.json.JSONArray()
+        favoritePaths.forEach { json.put(it) }
+        viewModelScope.launch(Dispatchers.IO) {
+            try { file.writeText(json.toString()) } catch (_: Exception) {}
+        }
+    }
+
+    fun toggleFavoriteForSelected(context: android.content.Context) {
+        val selected = selectedFiles.map { it.path }
+        val allFavorited = selected.isNotEmpty() && selected.all { it in favoritePaths }
+        favoritePaths = if (allFavorited) favoritePaths - selected.toSet() else favoritePaths + selected.toSet()
+        saveFavoritePaths(context)
+        val msg = if (allFavorited) "Removed from Favorites" else "Added to Favorites"
+        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+        clearSelection()
+        refreshFavorites(context)
+    }
+
+    fun refreshFavorites(context: android.content.Context) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val validPaths = favoritePaths.filter { File(it).exists() }.toSet()
+            if (validPaths.size != favoritePaths.size) {
+                favoritePaths = validPaths
+                saveFavoritePaths(context)
+            }
+            val items = validPaths.mapNotNull { path ->
+                try {
+                    val f = File(path)
+                    if (!f.exists()) return@mapNotNull null
+                    val sizeStr = if (f.isDirectory) "--" else FileScanner.formatSize(f.length())
+                    val timeStr = FileScanner.formatTimestamp(f.lastModified())
+                    val parentFolder = path.split("/").dropLast(1).lastOrNull() ?: ""
+                    val metaParts = listOf(sizeStr, timeStr, parentFolder).filter { it.isNotBlank() }
+                    val isDir = f.isDirectory
+                    val ext = if (isDir) "" else f.extension.lowercase()
+
+                    val fileIcon = when {
+                        isDir -> Icons.Default.Folder
+                        listOf("png", "jpg", "jpeg", "webp", "gif").contains(ext) -> Icons.Default.Image
+                        listOf("mp4", "mkv", "avi", "mov", "webm").contains(ext) -> Icons.Default.Videocam
+                        listOf("mp3", "wav", "ogg", "flac").contains(ext) -> Icons.Default.MusicNote
+                        ext == "zip" -> Icons.Default.Archive
+                        ext == "pdf" -> Icons.Default.PictureAsPdf
+                        ext == "apk" -> Icons.Default.Android
+                        else -> Icons.Default.Description
+                    }
+
+                    val fileColor = when {
+                        isDir -> Color(0xFF00E5FF)
+                        listOf("png", "jpg", "jpeg", "webp", "gif").contains(ext) -> Color(0xFFFF5252)
+                        listOf("mp4", "mkv", "avi", "mov", "webm").contains(ext) -> Color(0xFF7C4DFF)
+                        listOf("mp3", "wav", "ogg", "flac").contains(ext) -> Color(0xFF00B0FF)
+                        ext == "zip" -> Color(0xFFFF4081)
+                        else -> Color.Gray
+                    }
+
+                    FileItem(
+                        name = f.name,
+                        meta = metaParts.joinToString(" • "),
+                        icon = fileIcon,
+                        color = fileColor,
+                        path = f.absolutePath,
+                        lastModified = f.lastModified(),
+                        size = f.length()
+                    )
+                } catch (_: Exception) { null }
+            }.sortedByDescending { it.lastModified }
+
+            withContext(Dispatchers.Main) {
+                dashboardFavoriteFiles = items
+            }
+        }
     }
     
     var stagedFiles by mutableStateOf<List<File>>(emptyList())
@@ -479,6 +573,7 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                 updateStorageStats()
             }
         }
+        refreshFavorites(context)
     }
 
     fun loadExplorerFolder(path: String, context: android.content.Context? = null) {
@@ -515,6 +610,31 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         viewModelScope.launch(Dispatchers.IO) {
             val results = when (cat) {
                 "Recent Files" -> FileScanner.getRecentFiles(context)
+                "Favorites" -> {
+                    val validPaths = favoritePaths.filter { File(it).exists() }.toSet()
+                    validPaths.mapNotNull { path ->
+                        try {
+                            val f = File(path)
+                            if (!f.exists()) return@mapNotNull null
+                            val sizeStr = if (f.isDirectory) "--" else FileScanner.formatSize(f.length())
+                            val timeStr = FileScanner.formatTimestamp(f.lastModified())
+                            val parentFolder = path.split("/").dropLast(1).lastOrNull() ?: ""
+                            val metaParts = listOf(sizeStr, timeStr, parentFolder).filter { it.isNotBlank() }
+                            val isDir = f.isDirectory
+                            val ext = if (isDir) "" else f.extension.lowercase()
+
+                            FileItem(
+                                name = f.name,
+                                meta = metaParts.joinToString(" • "),
+                                icon = if (isDir) Icons.Default.Folder else Icons.Default.Description,
+                                color = if (isDir) Color(0xFF00E5FF) else Color(0xFFFFD740),
+                                path = f.absolutePath,
+                                lastModified = f.lastModified(),
+                                size = f.length()
+                            )
+                        } catch (_: Exception) { null }
+                    }.sortedByDescending { it.lastModified }
+                }
                 "Images", "Videos", "Audio" -> FileScanner.getMediaFiles(context, cat)
                 "Internal Storage" -> {
                     explorerPath = "/storage/emulated/0"
