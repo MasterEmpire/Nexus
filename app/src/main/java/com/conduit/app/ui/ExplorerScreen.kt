@@ -238,37 +238,92 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
 
                     item { Spacer(modifier = Modifier.height(16.dp)) }
 
-                    // Recent Files Section
+                    // Dashboard Section Switcher (Recent Files vs Favorites)
                     item {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text("Recent Files", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                            TextButton(onClick = { openCategory("Recent Files") }) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                FilterChip(
+                                    selected = viewModel.dashboardListMode == "Recent",
+                                    onClick = { viewModel.dashboardListMode = "Recent" },
+                                    label = { Text("Recent Files", fontSize = 12.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = Color(0xFF00E5FF).copy(alpha = 0.15f),
+                                        selectedLabelColor = Color(0xFF00E5FF)
+                                    )
+                                )
+                                FilterChip(
+                                    selected = viewModel.dashboardListMode == "Favorites",
+                                    onClick = { viewModel.dashboardListMode = "Favorites" },
+                                    label = { 
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.Default.Star, null, tint = Color(0xFFFFD740), modifier = Modifier.size(13.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("Favorites (${viewModel.favoritePaths.size})", fontSize = 12.sp)
+                                        }
+                                    },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = Color(0xFFFFD740).copy(alpha = 0.15f),
+                                        selectedLabelColor = Color(0xFFFFD740)
+                                    )
+                                )
+                            }
+
+                            val isRecent = viewModel.dashboardListMode == "Recent"
+                            TextButton(onClick = { openCategory(if (isRecent) "Recent Files" else "Favorites") }) {
                                 Text("View All", color = Color(0xFF00E5FF), style = MaterialTheme.typography.labelSmall)
                             }
                         }
                     }
 
-                    items(viewModel.dashboardRecentFiles) { file ->
-                        FileRow(
-                            file = file, 
-                            isHighlighted = selectedFiles.contains(file),
-                            isPinned = viewModel.pinnedPaths.contains(file.path),
-                            onClick = {
-                                if (viewModel.isPickerMode) {
-                                    if (viewModel.pickerAllowMultiple) {
-                                        viewModel.toggleSelection(file)
+                    val activeDashboardFiles = if (viewModel.dashboardListMode == "Recent") {
+                        viewModel.dashboardRecentFiles
+                    } else {
+                        viewModel.dashboardFavoriteFiles
+                    }
+
+                    if (activeDashboardFiles.isEmpty()) {
+                        item {
+                            Box(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = if (viewModel.dashboardListMode == "Recent") "No recent files" else "No favorite files yet. Tap 'Favourite' in the more menu to star files.",
+                                    color = Color.Gray,
+                                    fontSize = 12.sp,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                    modifier = Modifier.padding(horizontal = 24.dp)
+                                )
+                            }
+                        }
+                    } else {
+                        items(activeDashboardFiles) { file ->
+                            FileRow(
+                                file = file, 
+                                isHighlighted = selectedFiles.contains(file),
+                                isPinned = viewModel.pinnedPaths.contains(file.path),
+                                isFavorite = viewModel.favoritePaths.contains(file.path),
+                                onClick = {
+                                    if (viewModel.isPickerMode) {
+                                        if (viewModel.pickerAllowMultiple) {
+                                            viewModel.toggleSelection(file)
+                                        } else {
+                                            viewModel.finishPicking(context, listOf(file))
+                                        }
+                                    } else if (selectedFiles.isNotEmpty()) {
+                                        viewModel.toggleSelection(file) 
                                     } else {
-                                        viewModel.finishPicking(context, listOf(file))
+                                        viewModel.onFileClicked(file, context, loadFolder)
                                     }
-                                } else if (selectedFiles.isNotEmpty()) {
-                                    viewModel.toggleSelection(file) 
-                                } else {
-                                    viewModel.onFileClicked(file, context, loadFolder)
-                                }
-                            },
-                            onLongClick = { viewModel.toggleSelection(file) }
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
+                                },
+                                onLongClick = { viewModel.toggleSelection(file) }
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                        }
                     }
                 }
 
@@ -420,6 +475,7 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                                             file = file, 
                                             isHighlighted = selectedFiles.contains(file) || file.path == viewModel.highlightedPath,
                                             isPinned = viewModel.pinnedPaths.contains(file.path),
+                                            isFavorite = viewModel.favoritePaths.contains(file.path),
                                             onClick = {
                                                 if (viewModel.isPickerMode) {
                                                     val isDir = java.io.File(file.path).isDirectory || file.path.contains("!/")
@@ -706,10 +762,21 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                                     }
                                 }
                             )
+                            val allFavorited = selectedFiles.isNotEmpty() && selectedFiles.all { it.path in viewModel.favoritePaths }
                             DropdownMenuItem(
-                                text = { Text("Favourite") }, 
-                                leadingIcon = { Icon(Icons.Default.StarBorder, null, modifier = Modifier.size(18.dp)) },
-                                onClick = { showMoreMenu = false }
+                                text = { Text(if (allFavorited) "Unfavourite" else "Favourite") }, 
+                                leadingIcon = { 
+                                    Icon(
+                                        if (allFavorited) Icons.Default.Star else Icons.Default.StarBorder, 
+                                        null, 
+                                        tint = if (allFavorited) Color(0xFFFFD740) else Color.White,
+                                        modifier = Modifier.size(18.dp)
+                                    ) 
+                                },
+                                onClick = {
+                                    viewModel.toggleFavoriteForSelected(context)
+                                    showMoreMenu = false
+                                }
                             )
                         }
                     }
@@ -1081,7 +1148,7 @@ fun ExpandingSearch(isExpanded: Boolean, query: String, onQueryChange: (String) 
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-fun FileRow(file: FileItem, isHighlighted: Boolean = false, isPinned: Boolean = false, onClick: () -> Unit = {}, onLongClick: () -> Unit = {}) {
+fun FileRow(file: FileItem, isHighlighted: Boolean = false, isPinned: Boolean = false, isFavorite: Boolean = false, onClick: () -> Unit = {}, onLongClick: () -> Unit = {}) {
     val context = LocalContext.current
     val ext = remember(file.name) { file.name.substringAfterLast('.', "").lowercase() }
     val isVid = remember(ext) { listOf("mp4", "mkv", "avi", "mov", "webm").contains(ext) }
@@ -1183,6 +1250,10 @@ fun FileRow(file: FileItem, isHighlighted: Boolean = false, isPinned: Boolean = 
         }
         if (isPinned) {
             Icon(Icons.Default.PushPin, "Pinned", tint = Color(0xFFFFD740), modifier = Modifier.size(16.dp))
+        }
+        if (isFavorite) {
+            if (isPinned) Spacer(modifier = Modifier.width(4.dp))
+            Icon(Icons.Default.Star, "Favorite", tint = Color(0xFFFFD740), modifier = Modifier.size(16.dp))
         }
     }
 }
