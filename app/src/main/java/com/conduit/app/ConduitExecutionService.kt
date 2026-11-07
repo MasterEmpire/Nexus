@@ -16,8 +16,15 @@ class ConduitExecutionService : Service() {
 
     companion object {
         @Volatile var isRunning = false
+        @Volatile var isWaitingForInput = false
         var outputListener: ((String) -> Unit)? = null
+        var inputRequestListener: ((String) -> Unit)? = null
+        private var activeInputQueue: java.util.concurrent.LinkedBlockingQueue<String>? = null
         var onFinished: (() -> Unit)? = null
+
+        fun provideInput(text: String) {
+            activeInputQueue?.offer(text)
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -38,23 +45,48 @@ class ConduitExecutionService : Service() {
         // Required for Android 14+: startForeground must be called within 10 seconds
         startForeground(NOTIF_ID, buildNotification("Kernel: Initializing...", true))
         
+        val inputQueue = java.util.concurrent.LinkedBlockingQueue<String>()
+        activeInputQueue = inputQueue
+        isWaitingForInput = false
         isRunning = true
         serviceScope.launch {
             try {
                 val python = Python.getInstance()
                 val executor = python.getModule("executor")
                 
-                executor.callAttr("run_code", code, object {
+                val outputCallback = object {
                     fun onOutput(text: String) {
                         outputListener?.invoke(text)
                     }
-                })
+                }
+
+                val inputCallback = object {
+                    fun onInputRequested(prompt: String): String {
+                        isWaitingForInput = true
+                        inputRequestListener?.invoke(prompt)
+                        updateNotification("Waiting for user input...", false)
+                        val input = try {
+                            inputQueue.poll(120, java.util.concurrent.TimeUnit.SECONDS) ?: ""
+                        } catch (e: InterruptedException) {
+                            ""
+                        } finally {
+                            isWaitingForInput = false
+                            updateNotification("Nexus Engine Active", true)
+                        }
+                        return input
+                    }
+                }
+
+                executor.callAttr("run_code", code, outputCallback, inputCallback)
             } catch (e: Exception) {
                 outputListener?.invoke("\n[SERVICE ERROR]: ${e.message}")
             } finally {
                 isRunning = false
+                isWaitingForInput = false
+                activeInputQueue = null
                 onFinished?.invoke()
                 outputListener = null
+                inputRequestListener = null
                 onFinished = null
                 updateNotification("Execution Finished", false)
                 stopForeground(STOP_FOREGROUND_DETACH)
@@ -96,6 +128,7 @@ class ConduitExecutionService : Service() {
     }
 
     override fun onDestroy() {
+        activeInputQueue?.offer("")
         serviceScope.cancel()
         super.onDestroy()
     }
