@@ -738,13 +738,60 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                         Text("Cancel", color = Color.Gray)
                     }
                     Button(
-                        onClick = { viewModel.performExtraction(context) },
+                        onClick = { viewModel.startExtraction(context) },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF69F0AE))
                     ) {
                         Text("Extract", color = Color.Black)
                     }
                 }
             }
+        }
+
+        if (viewModel.showExtractionConflictDialog) {
+            val conflictName = viewModel.extractionConflicts.firstOrNull() ?: "File"
+            val count = viewModel.extractionConflicts.size
+            val message = if (count == 1) {
+                "\"$conflictName\" already exists in this folder. What would you like to do?"
+            } else {
+                "$count files already exist in this folder ($conflictName and ${count - 1} others). What would you like to do?"
+            }
+
+            AlertDialog(
+                onDismissRequest = { viewModel.showExtractionConflictDialog = false },
+                title = { Text("File Collision", color = Color.White) },
+                text = { Text(message, color = Color.Gray) },
+                confirmButton = {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = {
+                            viewModel.executeExtraction(context, ConflictResolution.SKIP)
+                        }) {
+                            Text("Skip", color = Color.Gray)
+                        }
+                        TextButton(onClick = {
+                            viewModel.executeExtraction(context, ConflictResolution.REPLACE)
+                        }) {
+                            Text("Replace", color = Color(0xFFFF5252))
+                        }
+                        Button(
+                            onClick = {
+                                viewModel.executeExtraction(context, ConflictResolution.KEEP_BOTH)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF69F0AE))
+                        ) {
+                            Text("Keep Both", color = Color.Black)
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.showExtractionConflictDialog = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
         }
 
         if (showPropertyDialog && selectedFiles.isNotEmpty()) {
