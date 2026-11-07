@@ -200,14 +200,7 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
         }
     ) {
         Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-            if (currentCategory == null) {
-                Text(
-                    text = "Nexus Explorer",
-                    style = MaterialTheme.typography.headlineSmall, 
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(top = 20.dp, bottom = 10.dp)
-                )
-            }
+
 
             Box(
                 modifier = Modifier
@@ -328,12 +321,14 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                     }
                 }
 
-                PullToRefreshContainer(
-                    state = dashboardPullState,
-                    modifier = Modifier.align(Alignment.TopCenter),
-                    containerColor = Color(0xFF161B22),
-                    contentColor = Color(0xFF00E5FF)
-                )
+                if (dashboardPullState.verticalOffset > 15f || dashboardPullState.isRefreshing) {
+                    PullToRefreshContainer(
+                        state = dashboardPullState,
+                        modifier = Modifier.align(Alignment.TopCenter),
+                        containerColor = Color(0xFF161B22),
+                        contentColor = Color(0xFF00E5FF)
+                    )
+                }
             }
         }
 
@@ -557,12 +552,14 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                             }
                         }
 
-                        PullToRefreshContainer(
-                            state = folderPullState,
-                            modifier = Modifier.align(Alignment.TopCenter),
-                            containerColor = Color(0xFF161B22),
-                            contentColor = Color(0xFF00E5FF)
-                        )
+                        if (folderPullState.verticalOffset > 15f || folderPullState.isRefreshing) {
+                            PullToRefreshContainer(
+                                state = folderPullState,
+                                modifier = Modifier.align(Alignment.TopCenter),
+                                containerColor = Color(0xFF161B22),
+                                contentColor = Color(0xFF00E5FF)
+                            )
+                        }
                     }
                 }
             }
