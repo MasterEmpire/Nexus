@@ -526,14 +526,19 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                             String.format("%.1f %s", bytes / Math.pow(1024.0, i.toDouble()), units[i])
                         } else "0 B"
                         
+                        val lastMod = f.lastModified()
+                        val timeStr = FileScanner.formatTimestamp(lastMod)
                         val parentFolder = p.split("/").dropLast(1).lastOrNull() ?: ""
+                        val metaParts = listOf(sizeStr, timeStr, parentFolder).filter { it.isNotBlank() }
                         
                         FileItem(
                             name = f.name, 
-                            meta = "$sizeStr • $parentFolder", 
+                            meta = metaParts.joinToString(" • "), 
                             icon = if (cat == "Zips") Icons.Default.Archive else Icons.Default.Description, 
                             color = if (cat == "Zips") Color(0xFFFF4081) else Color(0xFFFFD740), 
-                            path = p
+                            path = p,
+                            lastModified = lastMod,
+                            size = f.length()
                         )
                     }
                 }
