@@ -758,6 +758,18 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                         }
                         val hasVirtualSelection = selectedFiles.any { it.path.contains("!/") }
                         DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
+                            val onlyFoldersSelected = selectedFiles.isNotEmpty() && !hasVirtualSelection && selectedFiles.all { java.io.File(it.path).isDirectory }
+                            if (onlyFoldersSelected) {
+                                DropdownMenuItem(
+                                    text = { Text("Copy Skeleton") },
+                                    leadingIcon = { Icon(Icons.Default.AccountTree, null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        showMoreMenu = false
+                                        viewModel.copySelectedFolderSkeleton(context)
+                                    }
+                                )
+                                HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+                            }
                             if (selectedFiles.size == 1 && !hasVirtualSelection) {
                                 val singleTarget = java.io.File(selectedFiles.first().path)
                                 if (!singleTarget.isDirectory) {
