@@ -135,7 +135,7 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
     var showMoreMenu by remember { mutableStateOf(false) }
 
     val bottomBarPadding by animateDpAsState(
-        targetValue = if (selectedFiles.isNotEmpty() || viewModel.isExtractionMode || viewModel.isTransferMode) 96.dp else 16.dp,
+        targetValue = if (selectedFiles.isNotEmpty() || viewModel.isExtractionMode || viewModel.isTransferMode || viewModel.isShareSaveMode) 96.dp else 16.dp,
         label = "bottomBarPadding"
     )
     val loadFolder = { path: String -> viewModel.loadExplorerFolder(path, context) }
@@ -1085,6 +1085,64 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
             }
         }
 
+        // Sticky Share-Save Bar
+        androidx.compose.animation.AnimatedVisibility(
+            visible = viewModel.isShareSaveMode,
+            enter = slideInVertically(initialOffsetY = { it }),
+            exit = slideOutVertically(targetOffsetY = { it }),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp)
+        ) {
+            val shareCount = viewModel.shareSaveQueue.size
+            val firstName = viewModel.shareSaveQueue.firstOrNull()?.name ?: "file"
+            val saveTitle = when {
+                !inFolderDest -> "Open a folder to save ($shareCount)"
+                shareCount == 1 -> "Save '$firstName' into $destFolderName?"
+                else -> "Save $shareCount shared files into $destFolderName?"
+            }
+
+            Surface(
+                color = Color(0xFF1F2937),
+                shape = RoundedCornerShape(24.dp),
+                tonalElevation = 12.dp,
+                modifier = Modifier.fillMaxWidth(),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF00E5FF).copy(alpha = 0.55f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = saveTitle,
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = { viewModel.cancelShareSave() },
+                        modifier = Modifier.padding(end = 6.dp)
+                    ) {
+                        Text("Cancel", color = Color.Gray)
+                    }
+                    Button(
+                        onClick = {
+                            if (inFolderDest) viewModel.startShareSave(context)
+                            else openCategory("Internal Storage")
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF))
+                    ) {
+                        Text(
+                            text = if (inFolderDest) "Save" else "Browse",
+                            color = Color.Black,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
         if (viewModel.showAppChooserDialog && viewModel.pendingOpenFile != null) {
             val file = viewModel.pendingOpenFile!!
             val options = viewModel.pendingAppOptions
@@ -1201,10 +1259,15 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
             )
         }
 
-        val showCollision = viewModel.showExtractionConflictDialog || viewModel.showTransferConflictDialog
+        val showCollision = viewModel.showExtractionConflictDialog || viewModel.showTransferConflictDialog || viewModel.showShareConflictDialog
         if (showCollision) {
             val isTransfer = viewModel.showTransferConflictDialog
-            val conflicts = if (isTransfer) viewModel.transferConflicts else viewModel.extractionConflicts
+            val isShare = viewModel.showShareConflictDialog
+            val conflicts = when {
+                isShare -> viewModel.shareConflicts
+                isTransfer -> viewModel.transferConflicts
+                else -> viewModel.extractionConflicts
+            }
             val conflictName = conflicts.firstOrNull() ?: "File"
             val count = conflicts.size
             val message = if (count == 1) {
@@ -1215,8 +1278,11 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
 
             AlertDialog(
                 onDismissRequest = {
-                    if (isTransfer) viewModel.showTransferConflictDialog = false
-                    else viewModel.showExtractionConflictDialog = false
+                    when {
+                        isShare -> viewModel.showShareConflictDialog = false
+                        isTransfer -> viewModel.showTransferConflictDialog = false
+                        else -> viewModel.showExtractionConflictDialog = false
+                    }
                 },
                 title = { Text("File Collision", color = Color.White) },
                 text = { Text(message, color = Color.Gray) },
@@ -1227,21 +1293,30 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         TextButton(onClick = {
-                            if (isTransfer) viewModel.executeTransfer(context, ConflictResolution.SKIP)
-                            else viewModel.executeExtraction(context, ConflictResolution.SKIP)
+                            when {
+                                isShare -> viewModel.executeShareSave(context, ConflictResolution.SKIP)
+                                isTransfer -> viewModel.executeTransfer(context, ConflictResolution.SKIP)
+                                else -> viewModel.executeExtraction(context, ConflictResolution.SKIP)
+                            }
                         }) {
                             Text("Skip", color = Color.Gray)
                         }
                         TextButton(onClick = {
-                            if (isTransfer) viewModel.executeTransfer(context, ConflictResolution.REPLACE)
-                            else viewModel.executeExtraction(context, ConflictResolution.REPLACE)
+                            when {
+                                isShare -> viewModel.executeShareSave(context, ConflictResolution.REPLACE)
+                                isTransfer -> viewModel.executeTransfer(context, ConflictResolution.REPLACE)
+                                else -> viewModel.executeExtraction(context, ConflictResolution.REPLACE)
+                            }
                         }) {
                             Text("Replace", color = Color(0xFFFF5252))
                         }
                         Button(
                             onClick = {
-                                if (isTransfer) viewModel.executeTransfer(context, ConflictResolution.KEEP_BOTH)
-                                else viewModel.executeExtraction(context, ConflictResolution.KEEP_BOTH)
+                                when {
+                                    isShare -> viewModel.executeShareSave(context, ConflictResolution.KEEP_BOTH)
+                                    isTransfer -> viewModel.executeTransfer(context, ConflictResolution.KEEP_BOTH)
+                                    else -> viewModel.executeExtraction(context, ConflictResolution.KEEP_BOTH)
+                                }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF69F0AE))
                         ) {
@@ -1251,8 +1326,11 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                 },
                 dismissButton = {
                     TextButton(onClick = {
-                        if (isTransfer) viewModel.showTransferConflictDialog = false
-                        else viewModel.showExtractionConflictDialog = false
+                        when {
+                            isShare -> viewModel.showShareConflictDialog = false
+                            isTransfer -> viewModel.showTransferConflictDialog = false
+                            else -> viewModel.showExtractionConflictDialog = false
+                        }
                     }) {
                         Text("Cancel")
                     }
