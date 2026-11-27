@@ -130,6 +130,7 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
     // Ops State
     val selectedFiles = viewModel.selectedFiles
     var showRenameDialog by remember { mutableStateOf(false) }
+    var showCompressDialog by remember { mutableStateOf(false) }
     var showPropertyDialog by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) }
 
@@ -789,6 +790,14 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                                         showMoreMenu = false
                                     }
                                 )
+                                DropdownMenuItem(
+                                    text = { Text("Compress") },
+                                    leadingIcon = { Icon(Icons.Default.FolderZip, null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        showMoreMenu = false
+                                        showCompressDialog = true
+                                    }
+                                )
                                 HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
                             }
                             DropdownMenuItem(
@@ -884,6 +893,62 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
             )
         }
 
+        if (showCompressDialog && selectedFiles.isNotEmpty()) {
+            val itemsToCompress = selectedFiles.toList()
+            val compressFocus = remember { FocusRequester() }
+            val suggestedName = remember(itemsToCompress) { viewModel.suggestZipName(itemsToCompress) }
+            val dotIdx = suggestedName.lastIndexOf('.')
+            val initialSel = if (dotIdx > 0) TextRange(0, dotIdx) else TextRange(0, suggestedName.length)
+            var zipNameState by remember(suggestedName) {
+                mutableStateOf(TextFieldValue(suggestedName, initialSel))
+            }
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.delay(100)
+                try { compressFocus.requestFocus() } catch (_: Exception) {}
+            }
+            val submitCompress = {
+                val entered = zipNameState.text.trim()
+                if (entered.isNotEmpty()) {
+                    showCompressDialog = false
+                    viewModel.compressSelectedFiles(context, entered)
+                }
+            }
+            AlertDialog(
+                onDismissRequest = { showCompressDialog = false },
+                title = {
+                    Column {
+                        Text("Compress to ZIP")
+                        Text(
+                            text = "${itemsToCompress.size} ${if (itemsToCompress.size == 1) "item" else "items"} selected",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.Gray
+                        )
+                    }
+                },
+                text = {
+                    TextField(
+                        value = zipNameState,
+                        onValueChange = { zipNameState = it },
+                        label = { Text("Archive name") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { submitCompress() }),
+                        modifier = Modifier.fillMaxWidth().focusRequester(compressFocus)
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { submitCompress() },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF))
+                    ) {
+                        Text("Compress", color = Color.Black, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showCompressDialog = false }) { Text("Cancel") }
+                }
+            )
+        }
         val inFolderDest = viewModel.explorerCategory == "Internal Storage" || viewModel.explorerCategory == "Downloads"
         val destFolderName = if (viewModel.explorerPath.contains("!/")) {
             java.io.File(viewModel.explorerPath.substringBefore("!/")).parentFile?.name?.ifEmpty { "Storage" } ?: "Storage"
