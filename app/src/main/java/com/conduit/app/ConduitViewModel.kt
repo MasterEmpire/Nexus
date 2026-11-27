@@ -36,10 +36,16 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
     var showExplorerCreateDialog by mutableStateOf(false)
     var showExplorerSortMenu by mutableStateOf(false)
     var explorerReturnCategory by mutableStateOf<String?>(null)
+    var explorerEntryPath by mutableStateOf<String?>(null)
     var searchQuery by mutableStateOf("")
     var isSearching by mutableStateOf(false)
     var selectedFiles by mutableStateOf<Set<FileItem>>(emptySet())
-    val scrollPositions = mutableMapOf<String, Int>()
+    val scrollPositions = mutableMapOf<String, Pair<Int, Int>>()
+
+    fun getExplorerScrollKey(): String {
+        return if (explorerCategory == "Internal Storage") "Internal Storage:$explorerPath"
+        else explorerCategory ?: "Dashboard"
+    }
 
     var pinnedPaths by mutableStateOf<Set<String>>(emptySet())
         private set
@@ -100,7 +106,7 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         pinnedPaths = if (allPinned) pinnedPaths - selected.toSet() else pinnedPaths + selected.toSet()
         savePinnedPaths(context)
         clearSelection()
-        loadExplorerFolder(explorerPath)
+        refreshCurrentExplorerView(context)
     }
 
     fun loadFavoritePaths(context: android.content.Context) {
@@ -294,6 +300,12 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         val prefs = context.getSharedPreferences("conduit_settings", android.content.Context.MODE_PRIVATE)
         executionProfile = prefs.getString("exec_profile", "Standard") ?: "Standard"
         defaultBootSection = prefs.getString("default_boot_section", "File Manager") ?: "File Manager"
+        val savedSort = prefs.getString("explorer_sort_order", SortOrder.DATE_NEW.name)
+        currentSortOrder = try {
+            SortOrder.valueOf(savedSort ?: SortOrder.DATE_NEW.name)
+        } catch (_: Exception) {
+            SortOrder.DATE_NEW
+        }
 
         if (savedStateHandle.get<String>("currentView") == null && !isPickerMode) {
             when (defaultBootSection) {
@@ -369,6 +381,13 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
             pendingOpenIntent = null
             pendingAppOptions = emptyList()
         }
+    }
+
+    fun updateSortOrder(context: android.content.Context, order: SortOrder) {
+        currentSortOrder = order
+        context.getSharedPreferences("conduit_settings", android.content.Context.MODE_PRIVATE)
+            .edit().putString("explorer_sort_order", order.name).apply()
+        refreshCurrentExplorerView(context)
     }
 
     fun updateDefaultBootSection(context: android.content.Context, section: String) {
@@ -724,9 +743,51 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         refreshFavorites(context)
     }
 
+    fun sortWithPins(items: List<FileItem>): List<FileItem> {
+        val comparator = Comparator<FileItem> { a, b ->
+            val aIsDir = a.icon == Icons.Default.Folder || a.icon == Icons.Default.FolderZip
+            val bIsDir = b.icon == Icons.Default.Folder || b.icon == Icons.Default.FolderZip
+            if (aIsDir != bIsDir) return@Comparator if (aIsDir) -1 else 1
+            when (currentSortOrder) {
+                SortOrder.NAME_ASC -> a.name.lowercase().compareTo(b.name.lowercase())
+                SortOrder.NAME_DESC -> b.name.lowercase().compareTo(a.name.lowercase())
+                SortOrder.DATE_NEW -> b.lastModified.compareTo(a.lastModified)
+                SortOrder.DATE_OLD -> a.lastModified.compareTo(b.lastModified)
+                SortOrder.SIZE_LARGE -> b.size.compareTo(a.size)
+                SortOrder.SIZE_SMALL -> a.size.compareTo(b.size)
+            }
+        }
+        return items.sortedWith(comparator).sortedByDescending { it.path in pinnedPaths }
+    }
+
+    fun refreshCurrentExplorerView(context: android.content.Context) {
+        when (val cat = explorerCategory) {
+            null -> refreshDashboard(context)
+            "Internal Storage" -> loadExplorerFolder(explorerPath, context)
+            "Search Results" -> {
+                if (searchQuery.isNotBlank()) {
+                    isScanningExplorer = true
+                    viewModelScope.launch(Dispatchers.IO) {
+                        val target = if (explorerPath != "/storage/emulated/0") explorerPath else null
+                        val results = FileScanner.searchFilesNative(context, searchQuery, target)
+                        val sorted = sortWithPins(results)
+                        withContext(Dispatchers.Main) {
+                            explorerFiles = sorted
+                            isScanningExplorer = false
+                        }
+                    }
+                } else {
+                    explorerFiles = sortWithPins(explorerFiles)
+                }
+            }
+            else -> openExplorerCategory(context, cat)
+        }
+    }
+
     fun loadExplorerFolder(path: String, context: android.content.Context? = null) {
         if (explorerCategory != "Internal Storage" && explorerCategory != null) {
             explorerReturnCategory = explorerCategory
+            explorerEntryPath = path
         }
         explorerCategory = "Internal Storage"
         explorerPath = path
@@ -738,7 +799,6 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                 FileScanner.getZipContents(zipPath, internal)
             } else {
                 val results = FileScanner.getDirectoryContents(path, currentSortOrder, folderCountCache)
-                // Save cache if it was updated during the scan
                 if (context != null) {
                     saveFolderCache(context)
                 }
@@ -769,7 +829,6 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                             val parentFolder = path.split("/").dropLast(1).lastOrNull() ?: ""
                             val metaParts = listOf(sizeStr, timeStr, parentFolder).filter { it.isNotBlank() }
                             val isDir = f.isDirectory
-                            val ext = if (isDir) "" else f.extension.lowercase()
 
                             FileItem(
                                 name = f.name,
@@ -781,22 +840,22 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                                 size = f.length()
                             )
                         } catch (_: Exception) { null }
-                    }.sortedByDescending { it.lastModified }
+                    }
                 }
                 "Images", "Videos", "Audio" -> FileScanner.getMediaFiles(context, cat)
                 "Internal Storage" -> {
                     explorerPath = "/storage/emulated/0"
-                    FileScanner.getDirectoryContents(explorerPath, currentSortOrder)
+                    FileScanner.getDirectoryContents(explorerPath, currentSortOrder, folderCountCache)
                 }
                 "Downloads" -> {
                     explorerPath = "/storage/emulated/0/Download"
-                    FileScanner.getDirectoryContents(explorerPath, currentSortOrder)
+                    FileScanner.getDirectoryContents(explorerPath, currentSortOrder, folderCountCache)
                 }
                 else -> {
                     val python = com.chaquo.python.Python.getInstance()
                     val executor = python.getModule("executor")
                     val list = executor.callAttr("find_files_by_type", cat.lowercase()).asList()
-                    list.map { 
+                    list.map {
                         val p = it.toString()
                         val f = File(p)
                         val sizeStr = if (f.length() > 0) {
@@ -805,17 +864,17 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                             val i = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
                             String.format("%.1f %s", bytes / Math.pow(1024.0, i.toDouble()), units[i])
                         } else "0 B"
-                        
+
                         val lastMod = f.lastModified()
                         val timeStr = FileScanner.formatTimestamp(lastMod)
                         val parentFolder = p.split("/").dropLast(1).lastOrNull() ?: ""
                         val metaParts = listOf(sizeStr, timeStr, parentFolder).filter { it.isNotBlank() }
-                        
+
                         FileItem(
-                            name = f.name, 
-                            meta = metaParts.joinToString(" • "), 
-                            icon = if (cat == "Zips") Icons.Default.Archive else Icons.Default.Description, 
-                            color = if (cat == "Zips") Color(0xFFFF4081) else Color(0xFFFFD740), 
+                            name = f.name,
+                            meta = metaParts.joinToString(" • "),
+                            icon = if (cat == "Zips") Icons.Default.Archive else Icons.Default.Description,
+                            color = if (cat == "Zips") Color(0xFFFF4081) else Color(0xFFFFD740),
                             path = p,
                             lastModified = lastMod,
                             size = f.length()
@@ -823,7 +882,11 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                     }
                 }
             }
-            val sortedResults = results.sortedByDescending { it.path in pinnedPaths }
+            val sortedResults = if (cat == "Internal Storage" || cat == "Downloads") {
+                results.sortedByDescending { it.path in pinnedPaths }
+            } else {
+                sortWithPins(results)
+            }
             withContext(Dispatchers.Main) {
                 explorerFiles = sortedResults
                 isScanningExplorer = false
@@ -1065,10 +1128,19 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                 val oldFile = File(oldPath)
                 val newFile = File(oldFile.parent, newName)
                 if (newFile.exists()) throw Exception("File already exists")
-                
+
                 val success = oldFile.renameTo(newFile)
                 withContext(Dispatchers.Main) {
                     if (success) {
+                        if (oldPath in favoritePaths) {
+                            favoritePaths = (favoritePaths - oldPath) + newFile.absolutePath
+                            saveFavoritePaths(context)
+                            refreshFavorites(context)
+                        }
+                        if (oldPath in pinnedPaths) {
+                            pinnedPaths = (pinnedPaths - oldPath) + newFile.absolutePath
+                            savePinnedPaths(context)
+                        }
                         android.widget.Toast.makeText(context, "Renamed to $newName", android.widget.Toast.LENGTH_SHORT).show()
                         android.media.MediaScannerConnection.scanFile(context, arrayOf(oldPath, newFile.absolutePath), null, null)
                         onComplete()
@@ -1104,12 +1176,25 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         val filesToDelete = selectedFiles.toList()
         viewModelScope.launch(Dispatchers.IO) {
             var successCount = 0
+            val deletedPaths = mutableSetOf<String>()
             filesToDelete.forEach { item ->
                 val file = File(item.path)
-                if (if (file.isDirectory) file.deleteRecursively() else file.delete()) successCount++
+                if (if (file.isDirectory) file.deleteRecursively() else file.delete()) {
+                    successCount++
+                    deletedPaths.add(item.path)
+                }
                 android.media.MediaScannerConnection.scanFile(context, arrayOf(item.path), null, null)
             }
             withContext(Dispatchers.Main) {
+                if (deletedPaths.any { it in favoritePaths }) {
+                    favoritePaths = favoritePaths - deletedPaths
+                    saveFavoritePaths(context)
+                    refreshFavorites(context)
+                }
+                if (deletedPaths.any { it in pinnedPaths }) {
+                    pinnedPaths = pinnedPaths - deletedPaths
+                    savePinnedPaths(context)
+                }
                 android.widget.Toast.makeText(context, "Deleted $successCount files", android.widget.Toast.LENGTH_SHORT).show()
                 clearSelection()
                 onComplete()
@@ -1165,20 +1250,32 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         }
     }
 
+    private fun isEditableTextFile(fileName: String): Boolean {
+        val lower = fileName.lowercase()
+        val ext = lower.substringAfterLast('.', "")
+        val textExts = setOf(
+            "txt", "py", "pyw", "js", "mjs", "cjs", "json", "kt", "kts", "java", "html", "htm",
+            "css", "scss", "md", "markdown", "yml", "yaml", "c", "cpp", "cc", "h", "hpp", "ts",
+            "tsx", "jsx", "xml", "svg", "sql", "log", "env", "ini", "cfg", "conf", "sh", "bash",
+            "zsh", "bat", "cmd", "ps1", "gradle", "properties", "toml", "csv", "tsv", "rst",
+            "tex", "srt", "vtt", "sub", "ass", "rs", "go", "rb", "php", "dart", "swift", "lua",
+            "gitignore", "gitattributes", "editorconfig", "lock", "manifest", "reg", "inf"
+        )
+        val knownNames = setOf(
+            "readme", "license", "makefile", "dockerfile", "procfile",
+            "gemfile", "rakefile", "changelog", "authors", "notice", "hosts"
+        )
+        return (ext.isNotEmpty() && ext in textExts) || lower in knownNames
+    }
+
     fun onFileClicked(fileItem: FileItem, context: android.content.Context, loadFolder: (String) -> Unit) {
         // Handle Virtual Archive Paths Safely
         if (fileItem.path.contains("!/")) {
             if (fileItem.path.endsWith("/")) {
-                explorerCategory = "Internal Storage"
                 loadFolder(fileItem.path)
             } else {
-                val textExts = listOf(
-                    "txt", "py", "js", "json", "kt", "java", "html", "css", "md", "yml", "yaml", 
-                    "c", "cpp", "h", "ts", "tsx", "jsx", "xml", "sql", "log", "env", "ini", 
-                    "conf", "sh", "bat", "gradle", "properties", "toml"
-                )
-                val ext = fileItem.path.substringAfterLast('.', "").lowercase()
-                if (textExts.contains(ext)) {
+                val entryFileName = fileItem.path.substringAfterLast('/')
+                if (isEditableTextFile(entryFileName)) {
                     android.widget.Toast.makeText(context, "Opening in read-only mode...", android.widget.Toast.LENGTH_SHORT).show()
                     viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                         try {
@@ -1220,17 +1317,11 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
 
         val file = File(fileItem.path)
         if (file.isDirectory) {
-            explorerCategory = "Internal Storage"
             loadFolder(file.absolutePath)
         } else {
-            val textExts = listOf(
-                "txt", "py", "js", "json", "kt", "java", "html", "css", "md", "yml", "yaml", 
-                "c", "cpp", "h", "ts", "tsx", "jsx", "xml", "sql", "log", "env", "ini", 
-                "conf", "sh", "bat", "gradle", "properties", "toml"
-            )
             if (file.extension.lowercase() == "zip") {
                 loadFolder("${file.absolutePath}!/")
-            } else if (textExts.contains(file.extension.lowercase())) {
+            } else if (isEditableTextFile(file.name)) {
                 openFileForEditing(file)
             } else {
                 try {
@@ -1427,8 +1518,12 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
 
         transferQueue.forEach { item ->
             val src = File(item.path)
-            if (File(destDir, src.name).exists()) {
-                conflicts.add(src.name)
+            val candidate = File(destDir, src.name)
+            if (candidate.exists()) {
+                val isSameLocation = isMoveOperation && (src.canonicalPath == candidate.canonicalPath)
+                if (!isSameLocation) {
+                    conflicts.add(src.name)
+                }
             }
         }
         return conflicts
@@ -1481,6 +1576,10 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                     if (!src.exists()) return@forEach
 
                     if (src.isDirectory && destDir.canonicalPath.startsWith(src.canonicalPath)) {
+                        return@forEach
+                    }
+
+                    if (isMove && src.canonicalPath == File(destDir, src.name).canonicalPath) {
                         return@forEach
                     }
 
