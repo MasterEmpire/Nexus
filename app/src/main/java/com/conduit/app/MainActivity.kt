@@ -5,11 +5,14 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
-import android.os.Handler
-import android.os.Looper
-import android.widget.Toast
-import kotlin.system.exitProcess
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.provider.Settings
+import android.widget.Toast
+import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -32,6 +35,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import java.io.File
@@ -123,57 +140,100 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        // Request Notification Permission
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            requestPermissionLauncher.launch(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS))
-        }
-        
-        Thread.setDefaultUncaughtExceptionHandler { _, throwable ->
-            Handler(Looper.getMainLooper()).post {
-                Toast.makeText(applicationContext, "FATAL ERROR: ${throwable.localizedMessage}", Toast.LENGTH_LONG).show()
+    private fun runBootstrapInit(): Pair<String, String?>? {
+        return try {
+            if (!Python.isStarted()) {
+                Python.start(AndroidPlatform(this))
             }
-            // Give the Toast time to appear before the process dies
-            Thread.sleep(3500)
-            exitProcess(1)
+            handlePickerIntent(intent)
+            viewModel.loadQuickPills(this)
+            viewModel.loadPinnedPaths(this)
+            viewModel.loadFavoritePaths(this)
+            viewModel.loadFolderCache(this)
+            viewModel.initRecovery(cacheDir)
+            viewModel.loadSettings(this)
+            SharedRuntimeLoader.tryLoadExisting(this)
+            null
+        } catch (t: Throwable) {
+            val savedPath = CrashBootstrap.logHandledThrowable(this, "BOOT_INIT", t)
+            val report = CrashBootstrap.formatReport(this, Thread.currentThread(), t, "BOOT_INIT_CRASH")
+            report to savedPath
         }
-        super.onCreate(savedInstanceState)
-        if (!Python.isStarted()) {
-            Python.start(AndroidPlatform(this))
+    }
+
+    private fun requestStartupPermissions() {
+        val permsToRequest = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                permsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
         }
-        handlePickerIntent(intent)
-        viewModel.loadQuickPills(this)
-        viewModel.loadPinnedPaths(this)
-        viewModel.loadFavoritePaths(this)
-        viewModel.loadFolderCache(this)
-        viewModel.initRecovery(cacheDir)
-        viewModel.loadSettings(this)
 
-        SharedRuntimeLoader.tryLoadExisting(this)
-
-        // Request Storage Permissions
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
-                val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-                startActivity(intent)
+                try {
+                    startActivity(
+                        Intent(
+                            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            Uri.parse("package:$packageName")
+                        )
+                    )
+                } catch (_: Throwable) {
+                    try {
+                        startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                    } catch (t: Throwable) {
+                        CrashBootstrap.logHandledThrowable(this, "STORAGE_PERM", t)
+                    }
+                }
             }
         } else {
-            requestPermissionLauncher.launch(arrayOf(
-                Manifest.permission.READ_EXTERNAL_STORAGE,
-                Manifest.permission.WRITE_EXTERNAL_STORAGE
-            ))
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                permsToRequest.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                permsToRequest.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            }
+        }
+
+        if (permsToRequest.isNotEmpty()) {
+            try {
+                requestPermissionLauncher.launch(permsToRequest.toTypedArray())
+            } catch (t: Throwable) {
+                CrashBootstrap.logHandledThrowable(this, "PERM_LAUNCHER", t)
+            }
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        CrashBootstrap.install(applicationContext)
+        super.onCreate(savedInstanceState)
+
+        val initialBootCrash = runBootstrapInit()
+        if (initialBootCrash == null) {
+            requestStartupPermissions()
         }
 
         setContent {
+            var bootCrash by remember { androidx.compose.runtime.mutableStateOf(initialBootCrash) }
             var isReady by remember { androidx.compose.runtime.mutableStateOf(SharedRuntimeLoader.isLoaded) }
             var loadingMsg by remember { androidx.compose.runtime.mutableStateOf("Loading shared runtime...") }
 
-            LaunchedEffect(Unit) {
-                if (!isReady) {
-                    val loaded = SharedRuntimeLoader.ensureLoaded(this@MainActivity) { status ->
-                        loadingMsg = status
+            LaunchedEffect(bootCrash) {
+                if (bootCrash == null && !isReady) {
+                    try {
+                        val loaded = SharedRuntimeLoader.ensureLoaded(this@MainActivity) { status ->
+                            loadingMsg = status
+                        }
+                        if (loaded) {
+                            isReady = true
+                        } else {
+                            loadingMsg = "Failed loading shared runtime. Check internet or storage permissions."
+                        }
+                    } catch (t: Throwable) {
+                        val savedPath = CrashBootstrap.logHandledThrowable(this@MainActivity, "RUNTIME_LOAD", t)
+                        val report = CrashBootstrap.formatReport(this@MainActivity, Thread.currentThread(), t, "RUNTIME_LOAD_CRASH")
+                        bootCrash = report to savedPath
                     }
-                    isReady = loaded
                 }
             }
 
@@ -186,27 +246,97 @@ class MainActivity : ComponentActivity() {
             )
             MaterialTheme(colorScheme = conduitColorScheme) {
                 Surface(color = MaterialTheme.colorScheme.background) {
-                    if (isReady) {
+                    val activeCrash = bootCrash
+                    if (activeCrash != null) {
+                        val (report, savedPath) = activeCrash
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(16.dp)
+                        ) {
+                            Text(
+                                text = "Nexus Boot Crash Caught",
+                                color = Color(0xFFFF5252),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Saved log: ${savedPath ?: "App external/internal crash_logs"}",
+                                color = Color(0xFF00E5FF),
+                                fontSize = 12.sp
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                                    .background(Color(0xFF161B22), RoundedCornerShape(10.dp))
+                                    .border(1.dp, Color(0xFFFF5252).copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+                                    .padding(12.dp)
+                                    .verticalScroll(rememberScrollState())
+                                    .horizontalScroll(rememberScrollState())
+                            ) {
+                                Text(
+                                    text = report,
+                                    color = Color(0xFFFFCDD2),
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        clipboard.setPrimaryClip(ClipData.newPlainText("Nexus Crash Log", report))
+                                        Toast.makeText(this@MainActivity, "Crash log copied", Toast.LENGTH_SHORT).show()
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF21262D))
+                                ) {
+                                    Text("Copy Log", color = Color.White)
+                                }
+                                Button(
+                                    onClick = {
+                                        val retryErr = runBootstrapInit()
+                                        bootCrash = retryErr
+                                        if (retryErr == null) {
+                                            isReady = SharedRuntimeLoader.isLoaded
+                                            requestStartupPermissions()
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF))
+                                ) {
+                                    Text("Retry Boot", color = Color.Black, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    } else if (isReady) {
                         ConduitIDE(viewModel)
                     } else {
                         Box(
-                            modifier = androidx.compose.ui.Modifier.fillMaxSize(),
+                            modifier = Modifier.fillMaxSize(),
                             contentAlignment = androidx.compose.ui.Alignment.Center
                         ) {
                             Column(
                                 horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
-                                verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
-                                modifier = androidx.compose.ui.Modifier.padding(24.dp)
+                                verticalArrangement = Arrangement.Center,
+                                modifier = Modifier.padding(24.dp)
                             ) {
                                 CircularProgressIndicator(color = Color(0xFF00E5FF))
-                                Spacer(modifier = androidx.compose.ui.Modifier.height(16.dp))
+                                Spacer(modifier = Modifier.height(16.dp))
                                 Text(
                                     text = "Nexus Core Loading",
                                     color = Color.White,
-                                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                                    fontWeight = FontWeight.Bold,
                                     fontSize = 16.sp
                                 )
-                                Spacer(modifier = androidx.compose.ui.Modifier.height(6.dp))
+                                Spacer(modifier = Modifier.height(6.dp))
                                 Text(
                                     text = loadingMsg,
                                     color = Color.Gray,
