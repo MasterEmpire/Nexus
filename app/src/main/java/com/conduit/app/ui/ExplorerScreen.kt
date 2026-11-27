@@ -706,7 +706,7 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                         }
                     }
 
-                    val hasZip = selectedFiles.any { it.path.endsWith(".zip") || it.path.contains("!/") }
+                    val hasZip = selectedFiles.any { it.path.lowercase().endsWith(".zip") || it.path.contains("!/") }
                     if (hasZip && !viewModel.isPickerMode) {
                         IconButton(onClick = { viewModel.prepareExtraction() }) {
                             Icon(Icons.Default.Unarchive, "Extract", tint = Color(0xFF69F0AE))
@@ -755,24 +755,27 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                         IconButton(onClick = { showMoreMenu = true }) {
                             Icon(Icons.Default.MoreVert, "More", tint = Color.White)
                         }
+                        val hasVirtualSelection = selectedFiles.any { it.path.contains("!/") }
                         DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
-                            DropdownMenuItem(
-                                text = { Text("Copy") },
-                                leadingIcon = { Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(18.dp)) },
-                                onClick = {
-                                    viewModel.prepareTransfer(isMove = false)
-                                    showMoreMenu = false
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Move") },
-                                leadingIcon = { Icon(Icons.Default.DriveFileMove, null, modifier = Modifier.size(18.dp)) },
-                                onClick = {
-                                    viewModel.prepareTransfer(isMove = true)
-                                    showMoreMenu = false
-                                }
-                            )
-                            HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+                            if (!hasVirtualSelection) {
+                                DropdownMenuItem(
+                                    text = { Text("Copy") },
+                                    leadingIcon = { Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        viewModel.prepareTransfer(isMove = false)
+                                        showMoreMenu = false
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Move") },
+                                    leadingIcon = { Icon(Icons.Default.DriveFileMove, null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        viewModel.prepareTransfer(isMove = true)
+                                        showMoreMenu = false
+                                    }
+                                )
+                                HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+                            }
                             DropdownMenuItem(
                                 text = { Text("Select All") },
                                 leadingIcon = { Icon(Icons.Default.SelectAll, null, modifier = Modifier.size(18.dp)) },
@@ -866,6 +869,13 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
             )
         }
 
+        val inFolderDest = viewModel.explorerCategory == "Internal Storage" || viewModel.explorerCategory == "Downloads"
+        val destFolderName = if (viewModel.explorerPath.contains("!/")) {
+            java.io.File(viewModel.explorerPath.substringBefore("!/")).parentFile?.name?.ifEmpty { "Storage" } ?: "Storage"
+        } else {
+            java.io.File(viewModel.explorerPath).name.ifEmpty { "Storage" }
+        }
+
         // Sticky Unarchive Bar
         androidx.compose.animation.AnimatedVisibility(
             visible = viewModel.isExtractionMode,
@@ -874,6 +884,8 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
             modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp)
         ) {
             val extractCount = viewModel.extractionQueue.size
+            val extractWord = if (extractCount == 1) "item" else "items"
+            val extractTitle = if (inFolderDest) "Extract $extractCount $extractWord into $destFolderName?" else "Open a folder to extract ($extractCount)"
             Surface(
                 color = Color(0xFF1F2937),
                 shape = RoundedCornerShape(24.dp),
@@ -887,23 +899,28 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Extract $extractCount ${if (extractCount == 1) "item" else "items"} here?",
+                        text = extractTitle,
                         color = Color.White,
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
                     TextButton(
                         onClick = { viewModel.cancelExtraction() },
-                        modifier = Modifier.padding(end = 8.dp)
+                        modifier = Modifier.padding(end = 6.dp)
                     ) {
                         Text("Cancel", color = Color.Gray)
                     }
                     Button(
-                        onClick = { viewModel.startExtraction(context) },
+                        onClick = {
+                            if (inFolderDest) viewModel.startExtraction(context)
+                            else openCategory("Internal Storage")
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF69F0AE))
                     ) {
-                        Text("Extract", color = Color.Black)
+                        Text(if (inFolderDest) "Extract" else "Browse", color = Color.Black, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -919,7 +936,11 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
             val isMove = viewModel.isMoveOperation
             val transferCount = viewModel.transferQueue.size
             val itemWord = if (transferCount == 1) "item" else "items"
-            val actionTitle = if (isMove) "Move $transferCount $itemWord here?" else "Copy $transferCount $itemWord here?"
+            val actionTitle = when {
+                !inFolderDest -> "Open a folder to paste ($transferCount)"
+                isMove -> "Move $transferCount $itemWord into $destFolderName?"
+                else -> "Copy $transferCount $itemWord into $destFolderName?"
+            }
             val buttonColor = if (isMove) Color(0xFFFFD740) else Color(0xFF00E5FF)
 
             Surface(
@@ -935,23 +956,32 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = actionTitle, 
-                        color = Color.White, 
-                        style = MaterialTheme.typography.labelLarge, 
+                        text = actionTitle,
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
                     TextButton(
                         onClick = { viewModel.cancelTransfer() },
-                        modifier = Modifier.padding(end = 8.dp)
+                        modifier = Modifier.padding(end = 6.dp)
                     ) {
                         Text("Cancel", color = Color.Gray)
                     }
                     Button(
-                        onClick = { viewModel.startTransfer(context) },
+                        onClick = {
+                            if (inFolderDest) viewModel.startTransfer(context)
+                            else openCategory("Internal Storage")
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = buttonColor)
                     ) {
-                        Text(if (isMove) "Move" else "Copy", color = Color.Black, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = if (!inFolderDest) "Browse" else if (isMove) "Move" else "Copy",
+                            color = Color.Black,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
