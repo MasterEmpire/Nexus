@@ -48,6 +48,11 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import android.content.Intent
 import android.content.Context
 import androidx.compose.foundation.combinedClickable
@@ -62,24 +67,31 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
     val focusManager = LocalFocusManager.current
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
 
-    // Auto-save scroll positions as the user scrolls through the current path
-    LaunchedEffect(listState) {
-        androidx.compose.runtime.snapshotFlow { listState.firstVisibleItemIndex }
-            .collect { index ->
-                if (!viewModel.isScanningExplorer && viewModel.explorerFiles.isNotEmpty()) {
-                    viewModel.scrollPositions[viewModel.explorerPath] = index
+    val scrollKey = viewModel.getExplorerScrollKey()
+    var isScrollRestored by remember(scrollKey) { mutableStateOf(false) }
+
+    // Restore saved scroll position (index + pixel offset) before allowing scroll saver to record
+    LaunchedEffect(scrollKey, viewModel.explorerFiles, viewModel.isScanningExplorer) {
+        if (!viewModel.isScanningExplorer && viewModel.highlightedPath == null && !isScrollRestored) {
+            if (viewModel.explorerFiles.isNotEmpty()) {
+                val saved = viewModel.scrollPositions[scrollKey]
+                if (saved != null && saved.first < viewModel.explorerFiles.size) {
+                    listState.scrollToItem(saved.first, saved.second)
+                } else {
+                    listState.scrollToItem(0, 0)
                 }
             }
+            isScrollRestored = true
+        }
     }
 
-    // Restore scroll position when entering a folder (or reset to 0 if newly visited)
-    LaunchedEffect(viewModel.explorerPath, viewModel.explorerFiles, viewModel.isScanningExplorer) {
-        if (!viewModel.isScanningExplorer && viewModel.explorerFiles.isNotEmpty() && viewModel.highlightedPath == null) {
-            val targetIndex = viewModel.scrollPositions[viewModel.explorerPath] ?: 0
-            if (targetIndex < viewModel.explorerFiles.size) {
-                listState.scrollToItem(targetIndex)
-            } else {
-                listState.scrollToItem(0)
+    // Record scroll position only after restoration completes so remounting never overwrites with (0, 0)
+    LaunchedEffect(listState, scrollKey) {
+        androidx.compose.runtime.snapshotFlow {
+            listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+        }.collect { pos ->
+            if (isScrollRestored && !viewModel.isScanningExplorer && viewModel.explorerFiles.isNotEmpty()) {
+                viewModel.scrollPositions[scrollKey] = pos
             }
         }
     }
@@ -157,12 +169,20 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
     val handleBackNavigation = {
         viewModel.isSearching = false
         val retCat = viewModel.explorerReturnCategory
-        if (retCat != null) {
+        val entryPath = viewModel.explorerEntryPath
+
+        if (currentCategory == "Search Results") {
             viewModel.explorerReturnCategory = null
-            if (retCat == "Internal Storage") loadFolder(viewModel.explorerPath)
-            else openCategory(retCat)
-        } else if (currentCategory == "Search Results") {
-            loadFolder(viewModel.explorerPath)
+            viewModel.explorerEntryPath = null
+            when (retCat) {
+                null -> viewModel.explorerCategory = null
+                "Internal Storage" -> loadFolder(viewModel.explorerPath)
+                else -> openCategory(retCat)
+            }
+        } else if (currentCategory == "Internal Storage" && retCat != null && viewModel.explorerPath == entryPath) {
+            viewModel.explorerReturnCategory = null
+            viewModel.explorerEntryPath = null
+            openCategory(retCat)
         } else if (currentCategory == "Internal Storage" && viewModel.explorerPath != "/storage/emulated/0") {
             val current = viewModel.explorerPath
             val parent = if (current.contains("!/")) {
@@ -178,6 +198,8 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
             }
             loadFolder(parent)
         } else {
+            viewModel.explorerReturnCategory = null
+            viewModel.explorerEntryPath = null
             viewModel.explorerCategory = null
         }
     }
@@ -190,11 +212,13 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
         }
     }
 
-        Box(modifier = Modifier
+    Box(modifier = Modifier
         .fillMaxSize()
         .pointerInput(Unit) {
             detectTapGestures(onTap = {
-                viewModel.isSearching = false
+                if (viewModel.searchQuery.isEmpty()) {
+                    viewModel.isSearching = false
+                }
                 focusManager.clearFocus()
             })
         }
@@ -295,7 +319,7 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                             }
                         }
                     } else {
-                        items(activeDashboardFiles) { file ->
+                        items(activeDashboardFiles, key = { it.path }) { file ->
                             FileRow(
                                 file = file, 
                                 isHighlighted = selectedFiles.contains(file),
@@ -378,7 +402,11 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                                     color = if (currentPath == rootPath) Color(0xFF00E5FF) else Color.Gray,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 14.sp,
-                                    modifier = Modifier.clickable { viewModel.loadExplorerFolder(rootPath) }
+                                    modifier = Modifier.clickable {
+                                        viewModel.explorerReturnCategory = null
+                                        viewModel.explorerEntryPath = null
+                                        loadFolder(rootPath)
+                                    }
                                 )
 
                                 if (currentPath != rootPath) {
@@ -466,7 +494,7 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                                     state = listState,
                                     contentPadding = PaddingValues(bottom = bottomBarPadding)
                                 ) {
-                                    items(viewModel.explorerFiles) { file ->
+                                    items(viewModel.explorerFiles, key = { it.path }) { file ->
                                         FileRow(
                                             file = file, 
                                             isHighlighted = selectedFiles.contains(file) || file.path == viewModel.highlightedPath,
@@ -566,9 +594,26 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
         }
 
         if (showCreateDialog) {
+            val createFocus = remember { FocusRequester() }
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.delay(100)
+                try { createFocus.requestFocus() } catch (_: Exception) {}
+            }
+            val submitCreate = {
+                if (newItemName.isNotBlank()) {
+                    viewModel.createFileOrFolder(
+                        context = context,
+                        name = newItemName.trim(),
+                        isFolder = createType == "Folder",
+                        onComplete = { viewModel.refreshCurrentExplorerView(context) }
+                    )
+                    newItemName = ""
+                    viewModel.showExplorerCreateDialog = false
+                }
+            }
             AlertDialog(
-                onDismissRequest = { viewModel.showExplorerCreateDialog = false },
-                title = { Text("Create New ${createType}") },
+                onDismissRequest = { viewModel.showExplorerCreateDialog = false; newItemName = "" },
+                title = { Text("Create New $createType") },
                 text = {
                     Column {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
@@ -589,7 +634,9 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                             onValueChange = { newItemName = it },
                             placeholder = { Text("Name") },
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                            keyboardActions = KeyboardActions(onDone = { submitCreate() }),
+                            modifier = Modifier.fillMaxWidth().focusRequester(createFocus)
                         )
                         if (createType == "File") {
                             Spacer(modifier = Modifier.height(8.dp))
@@ -597,8 +644,8 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                             Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
                                 exts.forEach { ext ->
                                     AssistChip(
-                                        onClick = { 
-                                            if (!newItemName.endsWith(ext)) newItemName += ext 
+                                        onClick = {
+                                            if (!newItemName.endsWith(ext)) newItemName += ext
                                         },
                                         label = { Text(ext) },
                                         modifier = Modifier.padding(end = 4.dp)
@@ -609,18 +656,7 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = {
-                        if (newItemName.isNotBlank()) {
-                            viewModel.createFileOrFolder(
-                                context = context,
-                                name = newItemName,
-                                isFolder = createType == "Folder",
-                                onComplete = { loadFolder(viewModel.explorerPath) }
-                            )
-                            newItemName = ""
-                            viewModel.showExplorerCreateDialog = false
-                        }
-                    }) {
+                    TextButton(onClick = { submitCreate() }) {
                         Text("Create")
                     }
                 },
@@ -698,7 +734,7 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                             text = { Text("This will delete ${if (selectedFiles.size > 1) "${selectedFiles.size} items" else firstFile?.name} forever. There is no trash bin here.") },
                             confirmButton = {
                                 TextButton(onClick = {
-                                    viewModel.deleteSelectedFiles(context) { loadFolder(viewModel.explorerPath) }
+                                    viewModel.deleteSelectedFiles(context) { viewModel.refreshCurrentExplorerView(context) }
                                     showNukeConfirm = false
                                 }) { Text("Nuke ${selectedFiles.size} items", color = Color.Red) }
                             },
@@ -787,17 +823,45 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
 
         if (showRenameDialog && selectedFiles.size == 1) {
             val fileToRename = selectedFiles.first()
-            var name by remember { mutableStateOf(fileToRename.name) }
+            val renameFocus = remember { FocusRequester() }
+            val isDir = java.io.File(fileToRename.path).isDirectory
+            val dotIdx = if (!isDir) fileToRename.name.lastIndexOf('.') else -1
+            val initialSel = if (dotIdx > 0) TextRange(0, dotIdx) else TextRange(0, fileToRename.name.length)
+            var nameState by remember(fileToRename.path) {
+                mutableStateOf(TextFieldValue(fileToRename.name, initialSel))
+            }
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.delay(100)
+                try { renameFocus.requestFocus() } catch (_: Exception) {}
+            }
+            val submitRename = {
+                val trimmed = nameState.text.trim()
+                if (trimmed.isNotEmpty() && trimmed != fileToRename.name) {
+                    viewModel.renameFile(context, fileToRename.path, trimmed) {
+                        viewModel.refreshCurrentExplorerView(context)
+                    }
+                }
+                showRenameDialog = false
+                viewModel.clearSelection()
+            }
             AlertDialog(
                 onDismissRequest = { showRenameDialog = false },
                 title = { Text("Rename") },
-                text = { TextField(value = name, onValueChange = { name = it }, singleLine = true) },
+                text = {
+                    TextField(
+                        value = nameState,
+                        onValueChange = { nameState = it },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { submitRename() }),
+                        modifier = Modifier.fillMaxWidth().focusRequester(renameFocus)
+                    )
+                },
                 confirmButton = {
-                    TextButton(onClick = {
-                        viewModel.renameFile(context, fileToRename.path, name) { loadFolder(viewModel.explorerPath) }
-                        showRenameDialog = false
-                        viewModel.clearSelection()
-                    }) { Text("Rename") }
+                    TextButton(onClick = { submitRename() }) { Text("Rename") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showRenameDialog = false }) { Text("Cancel") }
                 }
             )
         }
@@ -809,6 +873,7 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
             exit = slideOutVertically(targetOffsetY = { it }),
             modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp)
         ) {
+            val extractCount = viewModel.extractionQueue.size
             Surface(
                 color = Color(0xFF1F2937),
                 shape = RoundedCornerShape(24.dp),
@@ -822,9 +887,9 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Destination?", 
-                        color = Color.White, 
-                        style = MaterialTheme.typography.labelLarge, 
+                        text = "Extract $extractCount ${if (extractCount == 1) "item" else "items"} here?",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.weight(1f)
                     )
@@ -852,7 +917,9 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
             modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp)
         ) {
             val isMove = viewModel.isMoveOperation
-            val actionTitle = if (isMove) "Move here?" else "Copy here?"
+            val transferCount = viewModel.transferQueue.size
+            val itemWord = if (transferCount == 1) "item" else "items"
+            val actionTitle = if (isMove) "Move $transferCount $itemWord here?" else "Copy $transferCount $itemWord here?"
             val buttonColor = if (isMove) Color(0xFFFFD740) else Color(0xFF00E5FF)
 
             Surface(
@@ -1230,8 +1297,16 @@ fun CategoryItem(cat: Cat, onClick: (String) -> Unit) {
 
 @Composable
 fun ExpandingSearch(isExpanded: Boolean, query: String, onQueryChange: (String) -> Unit, onToggle: () -> Unit, onSearch: () -> Unit) {
-    val width by animateDpAsState(targetValue = if (isExpanded) 220.dp else 45.dp, animationSpec = spring(stiffness = Spring.StiffnessLow))
-    
+    val width by animateDpAsState(targetValue = if (isExpanded) 240.dp else 45.dp, animationSpec = spring(stiffness = Spring.StiffnessLow))
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(isExpanded) {
+        if (isExpanded) {
+            kotlinx.coroutines.delay(120)
+            try { focusRequester.requestFocus() } catch (_: Exception) {}
+        }
+    }
+
     Surface(
         modifier = Modifier.width(width).height(45.dp),
         shape = RoundedCornerShape(22.dp),
@@ -1240,20 +1315,42 @@ fun ExpandingSearch(isExpanded: Boolean, query: String, onQueryChange: (String) 
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp)) {
             Icon(
-                Icons.Default.Search, 
-                null, 
-                tint = Color(0xFF00E5FF), 
-                modifier = Modifier.size(20.dp).clickable { onToggle() }
+                Icons.Default.Search,
+                null,
+                tint = Color(0xFF00E5FF),
+                modifier = Modifier.size(20.dp).clickable {
+                    if (isExpanded && query.isNotBlank()) onSearch() else onToggle()
+                }
             )
             if (isExpanded) {
-                androidx.compose.foundation.text.BasicTextField(
-                    value = query,
-                    onValueChange = onQueryChange,
-                    modifier = Modifier.padding(start = 10.dp).weight(1f),
-                    textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 14.sp),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { onSearch() })
+                Box(
+                    modifier = Modifier.padding(start = 8.dp).weight(1f),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    if (query.isEmpty()) {
+                        Text(
+                            text = "Search files...",
+                            color = Color.Gray,
+                            fontSize = 14.sp,
+                            maxLines = 1
+                        )
+                    }
+                    androidx.compose.foundation.text.BasicTextField(
+                        value = query,
+                        onValueChange = onQueryChange,
+                        modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
+                        textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 14.sp),
+                        cursorBrush = SolidColor(Color(0xFF00E5FF)),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { onSearch() })
+                    )
+                }
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = "Clear search",
+                    tint = Color.Gray,
+                    modifier = Modifier.size(18.dp).clickable { onToggle() }
                 )
             }
         }
