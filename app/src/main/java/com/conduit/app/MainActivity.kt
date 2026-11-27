@@ -41,6 +41,7 @@ class MainActivity : ComponentActivity() {
         val action = inIntent.action
         val isPicker = inIntent.getBooleanExtra("extra_picker_mode", false) ||
             action == Intent.ACTION_GET_CONTENT ||
+            action == Intent.ACTION_PICK ||
             action == Intent.ACTION_OPEN_DOCUMENT ||
             action == "com.conduit.nexus.action.PICK_FILE"
 
