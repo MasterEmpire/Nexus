@@ -1426,56 +1426,119 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
             }
         }
     }
-
-    private fun detectExtractionConflicts(): List<String> {
+    private fun resolveDestinationDirectory(): File {
         val destPath = if (explorerPath.contains("!/")) {
             explorerPath.substringBefore("!/").let { File(it).parent ?: "/storage/emulated/0" }
         } else {
             explorerPath
         }
-        val destDir = File(destPath)
-        val conflicts = mutableListOf<String>()
+        return File(destPath)
+    }
 
-        extractionQueue.forEach { item ->
-            val isVirtual = item.path.contains("!/")
-            if (isVirtual) {
-                val internalPath = item.path.substringAfter("!/").trimStart('/')
-                val isDir = internalPath.endsWith("/") || item.meta.contains("Folder")
-                if (!isDir) {
-                    val fileName = File(internalPath).name
-                    if (File(destDir, fileName).exists()) {
-                        conflicts.add(fileName)
-                    }
+    private fun normalizeZipEntryName(raw: String): String {
+        var name = raw.replace("\\", "/")
+        while (name.contains("//")) name = name.replace("//", "/")
+        while (name.startsWith("/")) name = name.substring(1)
+        while (name.startsWith("./")) name = name.substring(2)
+        return name
+    }
+
+    private fun copyFileOrDir(src: File, dst: File, overwrite: Boolean) {
+        if (src.isDirectory) {
+            if (dst.exists() && !dst.isDirectory) {
+                if (overwrite) {
+                    if (!dst.delete()) throw Exception("Cannot overwrite file ${dst.name}")
                 } else {
-                    val folderName = File(internalPath.removeSuffix("/")).name
-                    if (File(destDir, folderName).exists()) {
-                        conflicts.add(folderName)
-                    }
+                    throw Exception("${dst.name} already exists")
                 }
-            } else {
-                val file = File(item.path)
-                if (file.extension.lowercase() == "zip") {
-                    val zipNameWithoutExt = file.nameWithoutExtension
-                    if (File(destDir, zipNameWithoutExt).exists()) {
-                        conflicts.add(zipNameWithoutExt)
-                    }
-                } else {
-                    if (File(destDir, file.name).exists()) {
-                        conflicts.add(file.name)
-                    }
+            }
+            if (!dst.exists() && !dst.mkdirs()) {
+                throw Exception("Cannot create folder ${dst.name}")
+            }
+            val children = src.listFiles() ?: emptyArray()
+            for (child in children) {
+                copyFileOrDir(child, File(dst, child.name), overwrite)
+            }
+        } else {
+            dst.parentFile?.let { parent ->
+                if (!parent.exists() && !parent.mkdirs()) {
+                    throw Exception("Cannot create folder ${parent.name}")
+                }
+            }
+            if (dst.exists()) {
+                if (!overwrite) return
+                if (dst.isDirectory) {
+                    if (!dst.deleteRecursively()) throw Exception("Cannot overwrite folder ${dst.name}")
+                } else if (!dst.delete()) {
+                    throw Exception("Cannot overwrite ${dst.name}")
+                }
+            }
+            src.inputStream().use { input ->
+                dst.outputStream().use { output ->
+                    input.copyTo(output)
                 }
             }
         }
-        return conflicts
+    }
+
+    private fun detectExtractionConflicts(): List<String> {
+        val destDir = resolveDestinationDirectory()
+        val conflicts = mutableSetOf<String>()
+
+        extractionQueue.forEach { item ->
+            val isVirtual = item.path.contains("!/")
+            val zipPath = if (isVirtual) item.path.substringBefore("!/") else item.path
+            val internalPath = if (isVirtual) item.path.substringAfter("!/").trimStart('/') else ""
+            val isSingleVirtualFile = isVirtual && !internalPath.endsWith("/") && !item.meta.contains("Folder")
+
+            try {
+                ZipFile(File(zipPath)).use { zip ->
+                    val entries = zip.entries()
+                    while (entries.hasMoreElements()) {
+                        val entry = entries.nextElement()
+                        val entryName = normalizeZipEntryName(entry.name)
+                        if (entryName.isEmpty() || entryName.split("/").any { it == ".." }) continue
+
+                        if (isSingleVirtualFile) {
+                            if (entryName == internalPath) {
+                                val fileName = File(internalPath).name
+                                if (File(destDir, fileName).exists()) {
+                                    conflicts.add(fileName)
+                                }
+                            }
+                        } else if (isVirtual) {
+                            val cleanFolder = internalPath.removeSuffix("/")
+                            if (entryName == cleanFolder || entryName.startsWith("$cleanFolder/")) {
+                                val folderBase = File(cleanFolder).name
+                                val subPath = if (entryName == cleanFolder) "" else entryName.removePrefix("$cleanFolder/")
+                                val relPath = if (subPath.isEmpty()) folderBase else "$folderBase/$subPath"
+                                if (!entry.isDirectory && !entryName.endsWith("/") && File(destDir, relPath).exists()) {
+                                    conflicts.add(File(relPath).name)
+                                }
+                            }
+                        } else {
+                            if (!entry.isDirectory && !entryName.endsWith("/") && File(destDir, entryName).exists()) {
+                                conflicts.add(File(entryName).name)
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        return conflicts.toList()
     }
 
     fun startExtraction(context: android.content.Context) {
-        val conflicts = detectExtractionConflicts()
-        if (conflicts.isNotEmpty()) {
-            extractionConflicts = conflicts
-            showExtractionConflictDialog = true
-        } else {
-            executeExtraction(context, ConflictResolution.REPLACE)
+        viewModelScope.launch(Dispatchers.IO) {
+            val conflicts = detectExtractionConflicts()
+            withContext(Dispatchers.Main) {
+                if (conflicts.isNotEmpty()) {
+                    extractionConflicts = conflicts
+                    showExtractionConflictDialog = true
+                } else {
+                    executeExtraction(context, ConflictResolution.REPLACE)
+                }
+            }
         }
     }
 
@@ -1484,20 +1547,16 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
     }
 
     private fun detectTransferConflicts(): List<String> {
-        val destPath = if (explorerPath.contains("!/")) {
-            explorerPath.substringBefore("!/").let { File(it).parent ?: "/storage/emulated/0" }
-        } else {
-            explorerPath
-        }
-        val destDir = File(destPath)
+        val destDir = resolveDestinationDirectory()
         val conflicts = mutableListOf<String>()
 
         transferQueue.forEach { item ->
             val src = File(item.path)
+            if (!src.exists()) return@forEach
             val candidate = File(destDir, src.name)
             if (candidate.exists()) {
-                val isSameLocation = isMoveOperation && (src.canonicalPath == candidate.canonicalPath)
-                if (!isSameLocation) {
+                val isSameMove = isMoveOperation && (src.canonicalPath == candidate.canonicalPath)
+                if (!isSameMove) {
                     conflicts.add(src.name)
                 }
             }
@@ -1506,25 +1565,24 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
     }
 
     fun startTransfer(context: android.content.Context) {
-        val conflicts = detectTransferConflicts()
-        if (conflicts.isNotEmpty()) {
-            transferConflicts = conflicts
-            showTransferConflictDialog = true
-        } else {
-            executeTransfer(context, ConflictResolution.REPLACE)
+        viewModelScope.launch(Dispatchers.IO) {
+            val conflicts = detectTransferConflicts()
+            withContext(Dispatchers.Main) {
+                if (conflicts.isNotEmpty()) {
+                    transferConflicts = conflicts
+                    showTransferConflictDialog = true
+                } else {
+                    executeTransfer(context, ConflictResolution.REPLACE)
+                }
+            }
         }
     }
 
     fun executeTransfer(
-        context: android.content.Context, 
+        context: android.content.Context,
         resolution: ConflictResolution = ConflictResolution.REPLACE
     ) {
-        val destPath = if (explorerPath.contains("!/")) {
-            explorerPath.substringBefore("!/").let { File(it).parent ?: "/storage/emulated/0" }
-        } else {
-            explorerPath
-        }
-        val destDir = File(destPath)
+        val destDir = resolveDestinationDirectory()
         val items = transferQueue
         val isMove = isMoveOperation
 
@@ -1538,54 +1596,72 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
 
         val actionName = if (isMove) "Moving" else "Copying"
         isDataLoading = true
-        android.widget.Toast.makeText(context, "$actionName files...", android.widget.Toast.LENGTH_SHORT).show()
+        android.widget.Toast.makeText(context, "$actionName ${items.size} item(s)...", android.widget.Toast.LENGTH_SHORT).show()
 
         viewModelScope.launch(Dispatchers.IO) {
             val affectedPaths = mutableListOf<String>()
+            val movedPairs = mutableListOf<Pair<String, String>>()
             var successCount = 0
+            var skippedCount = 0
+            val errorMessages = mutableListOf<String>()
 
             try {
-                if (!destDir.exists()) destDir.mkdirs()
+                if (!destDir.exists() && !destDir.mkdirs()) {
+                    throw Exception("Cannot access destination folder ${destDir.name}")
+                }
 
                 items.forEach { item ->
                     val src = File(item.path)
-                    if (!src.exists()) return@forEach
-
-                    if (src.isDirectory && destDir.canonicalPath.startsWith(src.canonicalPath)) {
+                    if (!src.exists()) {
+                        errorMessages.add("Source not found: ${item.name}")
                         return@forEach
                     }
 
-                    if (isMove && src.canonicalPath == File(destDir, src.name).canonicalPath) {
+                    val srcCanon = src.canonicalPath
+                    val destCanon = destDir.canonicalPath
+                    if (src.isDirectory && (destCanon == srcCanon || destCanon.startsWith("$srcCanon${File.separator}"))) {
+                        errorMessages.add("Cannot ${if (isMove) "move" else "copy"} '${src.name}' into itself")
                         return@forEach
+                    }
+
+                    val directTarget = File(destDir, src.name)
+                    if (srcCanon == directTarget.canonicalPath) {
+                        if (isMove || resolution == ConflictResolution.REPLACE || resolution == ConflictResolution.SKIP) {
+                            skippedCount++
+                            return@forEach
+                        }
                     }
 
                     val outFile = resolveDestinationFile(destDir, src.name, resolution)
-                    if (outFile != null) {
+                    if (outFile == null) {
+                        skippedCount++
+                        return@forEach
+                    }
+
+                    try {
                         if (isMove) {
-                            val moved = if (src.isDirectory) {
-                                src.renameTo(outFile) || (src.copyRecursively(outFile, overwrite = true) && src.deleteRecursively())
-                            } else {
-                                src.renameTo(outFile) || (try { src.copyTo(outFile, overwrite = true); src.delete() } catch (_: Exception) { false })
+                            val fastRenamed = !outFile.exists() && src.renameTo(outFile)
+                            if (!fastRenamed) {
+                                copyFileOrDir(src, outFile, overwrite = (resolution == ConflictResolution.REPLACE))
+                                if (!outFile.exists()) {
+                                    throw Exception("Failed to write ${outFile.name}")
+                                }
+                                val deletedSrc = if (src.isDirectory) src.deleteRecursively() else src.delete()
+                                if (!deletedSrc) {
+                                    throw Exception("Copied ${outFile.name}, but could not remove original")
+                                }
                             }
-                            if (moved) {
-                                successCount++
-                                affectedPaths.add(src.absolutePath)
-                                affectedPaths.add(outFile.absolutePath)
-                            }
+                            successCount++
+                            affectedPaths.add(src.absolutePath)
+                            affectedPaths.add(outFile.absolutePath)
+                            movedPairs.add(src.absolutePath to outFile.absolutePath)
                         } else {
-                            val copied = if (src.isDirectory) {
-                                src.copyRecursively(outFile, overwrite = (resolution == ConflictResolution.REPLACE))
-                            } else {
-                                try {
-                                    src.copyTo(outFile, overwrite = (resolution == ConflictResolution.REPLACE))
-                                    true
-                                } catch (_: Exception) { false }
-                            }
-                            if (copied) {
-                                successCount++
-                                affectedPaths.add(outFile.absolutePath)
-                            }
+                            copyFileOrDir(src, outFile, overwrite = (resolution == ConflictResolution.REPLACE))
+                            successCount++
+                            affectedPaths.add(outFile.absolutePath)
                         }
+                    } catch (e: Exception) {
+                        errorMessages.add("${src.name}: ${e.message ?: "Failed"}")
                     }
                 }
 
@@ -1599,10 +1675,43 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                 }
 
                 withContext(Dispatchers.Main) {
+                    if (movedPairs.isNotEmpty()) {
+                        var favChanged = false
+                        var pinChanged = false
+                        movedPairs.forEach { (oldP, newP) ->
+                            if (oldP in favoritePaths) {
+                                favoritePaths = (favoritePaths - oldP) + newP
+                                favChanged = true
+                            }
+                            if (oldP in pinnedPaths) {
+                                pinnedPaths = (pinnedPaths - oldP) + newP
+                                pinChanged = true
+                            }
+                        }
+                        if (favChanged) {
+                            saveFavoritePaths(context)
+                            refreshFavorites(context)
+                        }
+                        if (pinChanged) {
+                            savePinnedPaths(context)
+                        }
+                    }
+
                     isDataLoading = false
                     val pastTense = if (isMove) "Moved" else "Copied"
-                    android.widget.Toast.makeText(context, "$pastTense $successCount items", android.widget.Toast.LENGTH_SHORT).show()
-                    loadExplorerFolder(explorerPath, context)
+                    val summary = when {
+                        errorMessages.isNotEmpty() && successCount == 0 -> errorMessages.first()
+                        errorMessages.isNotEmpty() -> "$pastTense $successCount, ${errorMessages.size} failed (${errorMessages.first()})"
+                        successCount == 0 && skippedCount > 0 -> "Skipped $skippedCount item(s)"
+                        skippedCount > 0 -> "$pastTense $successCount item(s) ($skippedCount skipped)"
+                        else -> "$pastTense $successCount item(s)"
+                    }
+                    android.widget.Toast.makeText(
+                        context,
+                        summary,
+                        if (errorMessages.isNotEmpty()) android.widget.Toast.LENGTH_LONG else android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                    refreshCurrentExplorerView(context)
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
@@ -1614,15 +1723,10 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
     }
 
     fun executeExtraction(context: android.content.Context, resolution: ConflictResolution = ConflictResolution.REPLACE) {
-        val destPath = if (explorerPath.contains("!/")) {
-            explorerPath.substringBefore("!/").let { File(it).parent ?: "/storage/emulated/0" }
-        } else {
-            explorerPath
-        }
-        val destDir = File(destPath)
+        val destDir = resolveDestinationDirectory()
         val items = extractionQueue
         updateExtractionMode(false)
-        extractionQueue = emptyList()
+        updateExtractionQueue(emptyList())
         showExtractionConflictDialog = false
         extractionConflicts = emptyList()
 
@@ -1633,8 +1737,15 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
 
         viewModelScope.launch(Dispatchers.IO) {
             val extractedPaths = mutableListOf<String>()
+            var createdDirs = 0
+            var skippedCount = 0
+            val errorMessages = mutableListOf<String>()
+
             try {
-                if (!destDir.exists()) destDir.mkdirs()
+                if (!destDir.exists() && !destDir.mkdirs()) {
+                    throw Exception("Cannot create destination folder ${destDir.name}")
+                }
+                val destCanon = destDir.canonicalPath
 
                 items.forEach { item ->
                     val isVirtual = item.path.contains("!/")
@@ -1642,42 +1753,63 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                     val internalPath = if (isVirtual) item.path.substringAfter("!/").trimStart('/') else ""
                     val isSingleVirtualFile = isVirtual && !internalPath.endsWith("/") && !item.meta.contains("Folder")
 
-                    ZipFile(File(zipPath)).use { zip ->
-                        val entries = zip.entries()
-                        while (entries.hasMoreElements()) {
-                            val entry = entries.nextElement()
-                            var entryName = entry.name.replace("\\", "/")
-                            while (entryName.contains("//")) entryName = entryName.replace("//", "/")
-                            while (entryName.startsWith("/")) entryName = entryName.substring(1)
-                            while (entryName.startsWith("./")) entryName = entryName.substring(2)
+                    val zipFile = File(zipPath)
+                    if (!zipFile.exists()) {
+                        errorMessages.add("Archive not found: ${zipFile.name}")
+                        return@forEach
+                    }
 
-                            if (isSingleVirtualFile) {
-                                if (entryName == internalPath) {
-                                    val fileName = File(internalPath).name
-                                    val outFile = resolveDestinationFile(destDir, fileName, resolution)
-                                    if (outFile != null) {
-                                        outFile.parentFile?.mkdirs()
-                                        zip.getInputStream(entry).use { input ->
-                                            outFile.outputStream().use { output -> input.copyTo(output) }
+                    try {
+                        ZipFile(zipFile).use { zip ->
+                            val entries = zip.entries()
+                            while (entries.hasMoreElements()) {
+                                val entry = entries.nextElement()
+                                val entryName = normalizeZipEntryName(entry.name)
+                                if (entryName.isEmpty() || entryName.split("/").any { it == ".." }) continue
+
+                                if (isSingleVirtualFile) {
+                                    if (entryName == internalPath) {
+                                        val fileName = File(internalPath).name
+                                        val outFile = resolveDestinationFile(destDir, fileName, resolution)
+                                        if (outFile == null) {
+                                            skippedCount++
+                                        } else if (outFile.canonicalPath.startsWith("$destCanon${File.separator}")) {
+                                            outFile.parentFile?.mkdirs()
+                                            zip.getInputStream(entry).use { input ->
+                                                outFile.outputStream().use { output -> input.copyTo(output) }
+                                            }
+                                            extractedPaths.add(outFile.absolutePath)
                                         }
-                                        extractedPaths.add(outFile.absolutePath)
                                     }
-                                }
-                            } else if (isVirtual) {
-                                val cleanFolder = internalPath.removeSuffix("/")
-                                if (entryName.startsWith(cleanFolder)) {
-                                    val folderBase = File(cleanFolder).name
-                                    val subPath = if (entryName == cleanFolder || entryName == "$cleanFolder/") {
-                                        ""
-                                    } else {
-                                        entryName.removePrefix(cleanFolder).removePrefix("/")
+                                } else if (isVirtual) {
+                                    val cleanFolder = internalPath.removeSuffix("/")
+                                    if (entryName == cleanFolder || entryName.startsWith("$cleanFolder/")) {
+                                        val folderBase = File(cleanFolder).name
+                                        val subPath = if (entryName == cleanFolder) "" else entryName.removePrefix("$cleanFolder/")
+                                        val relPath = if (subPath.isEmpty()) folderBase else "$folderBase/$subPath"
+                                        if (entry.isDirectory || entryName.endsWith("/")) {
+                                            if (File(destDir, relPath).mkdirs()) createdDirs++
+                                        } else {
+                                            val outFile = resolveDestinationFile(destDir, relPath, resolution)
+                                            if (outFile == null) {
+                                                skippedCount++
+                                            } else if (outFile.canonicalPath.startsWith("$destCanon${File.separator}")) {
+                                                outFile.parentFile?.mkdirs()
+                                                zip.getInputStream(entry).use { input ->
+                                                    outFile.outputStream().use { output -> input.copyTo(output) }
+                                                }
+                                                extractedPaths.add(outFile.absolutePath)
+                                            }
+                                        }
                                     }
-                                    val relPath = if (subPath.isEmpty()) folderBase else "$folderBase/$subPath"
+                                } else {
                                     if (entry.isDirectory || entryName.endsWith("/")) {
-                                        File(destDir, relPath).mkdirs()
+                                        if (File(destDir, entryName).mkdirs()) createdDirs++
                                     } else {
-                                        val outFile = resolveDestinationFile(destDir, relPath, resolution)
-                                        if (outFile != null) {
+                                        val outFile = resolveDestinationFile(destDir, entryName, resolution)
+                                        if (outFile == null) {
+                                            skippedCount++
+                                        } else if (outFile.canonicalPath.startsWith("$destCanon${File.separator}")) {
                                             outFile.parentFile?.mkdirs()
                                             zip.getInputStream(entry).use { input ->
                                                 outFile.outputStream().use { output -> input.copyTo(output) }
@@ -1686,21 +1818,10 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                                         }
                                     }
                                 }
-                            } else {
-                                if (entry.isDirectory || entryName.endsWith("/")) {
-                                    File(destDir, entryName).mkdirs()
-                                } else {
-                                    val outFile = resolveDestinationFile(destDir, entryName, resolution)
-                                    if (outFile != null) {
-                                        outFile.parentFile?.mkdirs()
-                                        zip.getInputStream(entry).use { input ->
-                                            outFile.outputStream().use { output -> input.copyTo(output) }
-                                        }
-                                        extractedPaths.add(outFile.absolutePath)
-                                    }
-                                }
                             }
                         }
+                    } catch (e: Exception) {
+                        errorMessages.add("${zipFile.name}: ${e.message ?: "Invalid archive"}")
                     }
                 }
 
@@ -1715,8 +1836,21 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
 
                 withContext(Dispatchers.Main) {
                     isDataLoading = false
-                    android.widget.Toast.makeText(context, "Extraction complete (${extractedPaths.size} files)", android.widget.Toast.LENGTH_SHORT).show()
-                    loadExplorerFolder(explorerPath, context)
+                    val summary = when {
+                        errorMessages.isNotEmpty() && extractedPaths.isEmpty() -> "Extract failed: ${errorMessages.first()}"
+                        errorMessages.isNotEmpty() -> "Extracted ${extractedPaths.size} files (${errorMessages.first()})"
+                        extractedPaths.isEmpty() && skippedCount > 0 -> "Skipped $skippedCount existing file(s)"
+                        extractedPaths.isEmpty() && createdDirs > 0 -> "Extracted $createdDirs folder(s)"
+                        extractedPaths.isEmpty() -> "Archive had no extractable files"
+                        skippedCount > 0 -> "Extracted ${extractedPaths.size} file(s) ($skippedCount skipped)"
+                        else -> "Extracted ${extractedPaths.size} file(s)"
+                    }
+                    android.widget.Toast.makeText(
+                        context,
+                        summary,
+                        if (errorMessages.isNotEmpty()) android.widget.Toast.LENGTH_LONG else android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                    refreshCurrentExplorerView(context)
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
@@ -1726,7 +1860,6 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
             }
         }
     }
-
     fun openFileForEditing(file: File) {
         isDataLoading = true
         viewModelScope.launch(Dispatchers.IO) {
