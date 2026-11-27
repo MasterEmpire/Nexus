@@ -91,7 +91,7 @@ fun ConduitIDE(viewModel: ConduitViewModel) {
         }
     ) {
         if (viewModel.editingFile != null) {
-            TextEditorScreen(viewModel, onBack = { viewModel.editingFile = null })
+            TextEditorScreen(viewModel, onBack = { viewModel.closeEditor() })
         } else {
             Scaffold(
             topBar = {
@@ -153,54 +153,69 @@ fun ConduitIDE(viewModel: ConduitViewModel) {
                                 isExpanded = viewModel.isSearching,
                                 query = viewModel.searchQuery,
                                 onQueryChange = { viewModel.searchQuery = it },
-                                onToggle = { viewModel.isSearching = !viewModel.isSearching },
+                                onToggle = {
+                                    if (viewModel.isSearching) {
+                                        viewModel.searchQuery = ""
+                                        viewModel.isSearching = false
+                                    } else {
+                                        viewModel.isSearching = true
+                                    }
+                                },
                                 onSearch = {
+                                    val q = viewModel.searchQuery.trim()
+                                    if (q.isEmpty()) return@ExpandingSearch
                                     viewModel.isScanningExplorer = true
                                     scope.launch(Dispatchers.IO) {
-                                        val target = if (viewModel.explorerCategory == "Internal Storage" && viewModel.explorerPath != "/storage/emulated/0") viewModel.explorerPath else null
-                                        val results = FileScanner.searchFilesNative(context, viewModel.searchQuery, target)
+                                        val target = if (viewModel.explorerCategory == "Internal Storage" && viewModel.explorerPath != "/storage/emulated/0" && !viewModel.explorerPath.contains("!/")) viewModel.explorerPath else null
+                                        val results = FileScanner.searchFilesNative(context, q, target)
+                                        val sorted = viewModel.sortWithPins(results)
                                         withContext(Dispatchers.Main) {
                                             if (viewModel.explorerCategory != "Search Results") {
                                                 viewModel.explorerReturnCategory = viewModel.explorerCategory
+                                                viewModel.explorerEntryPath = null
                                             }
                                             viewModel.explorerCategory = "Search Results"
-                                            viewModel.explorerFiles = results.sortedByDescending { it.path in viewModel.pinnedPaths }
+                                            viewModel.explorerFiles = sorted
                                             viewModel.isScanningExplorer = false
                                         }
                                     }
                                 }
                             )
                             if (viewModel.explorerCategory != null && !viewModel.isSearching) {
-                                Box {
-                                    IconButton(onClick = { viewModel.showExplorerSortMenu = true }) {
-                                        Icon(Icons.Default.Sort, null, tint = MaterialTheme.colorScheme.primary)
-                                    }
-                                    DropdownMenu(
-                                        expanded = viewModel.showExplorerSortMenu,
-                                        onDismissRequest = { viewModel.showExplorerSortMenu = false }
-                                    ) {
-                                        SortOrder.entries.forEach { order ->
-                                            val isActive = viewModel.currentSortOrder == order
-                                            DropdownMenuItem(
-                                                text = {
-                                                    Text(
-                                                        text = order.name.replace("_", " ").lowercase().replaceFirstChar { it.uppercase() },
-                                                        color = if (isActive) Color(0xFF00E5FF) else Color.Unspecified,
-                                                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
-                                                    )
-                                                },
-                                                onClick = {
-                                                    viewModel.currentSortOrder = order
-                                                    viewModel.loadExplorerFolder(viewModel.explorerPath, context)
-                                                    viewModel.showExplorerSortMenu = false
-                                                },
-                                                leadingIcon = if (isActive) { { Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp), tint = Color(0xFF00E5FF)) } } else null
-                                            )
+                                if (!viewModel.explorerPath.contains("!/")) {
+                                    Box {
+                                        IconButton(onClick = { viewModel.showExplorerSortMenu = true }) {
+                                            Icon(Icons.Default.Sort, null, tint = MaterialTheme.colorScheme.primary)
+                                        }
+                                        DropdownMenu(
+                                            expanded = viewModel.showExplorerSortMenu,
+                                            onDismissRequest = { viewModel.showExplorerSortMenu = false }
+                                        ) {
+                                            SortOrder.entries.forEach { order ->
+                                                val isActive = viewModel.currentSortOrder == order
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Text(
+                                                            text = order.name.replace("_", " ").lowercase().replaceFirstChar { it.uppercase() },
+                                                            color = if (isActive) Color(0xFF00E5FF) else Color.Unspecified,
+                                                            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        viewModel.updateSortOrder(context, order)
+                                                        viewModel.showExplorerSortMenu = false
+                                                    },
+                                                    leadingIcon = if (isActive) { { Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp), tint = Color(0xFF00E5FF)) } } else null
+                                                )
+                                            }
                                         }
                                     }
                                 }
-                                IconButton(onClick = { viewModel.showExplorerCreateDialog = true }) {
-                                    Icon(Icons.Default.Add, null, tint = MaterialTheme.colorScheme.primary)
+                                val canCreateHere = (viewModel.explorerCategory == "Internal Storage" || viewModel.explorerCategory == "Downloads") && !viewModel.explorerPath.contains("!/")
+                                if (canCreateHere) {
+                                    IconButton(onClick = { viewModel.showExplorerCreateDialog = true }) {
+                                        Icon(Icons.Default.Add, null, tint = MaterialTheme.colorScheme.primary)
+                                    }
                                 }
                             }
                         }
