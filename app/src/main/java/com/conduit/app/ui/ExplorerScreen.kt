@@ -757,6 +757,21 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
                         }
                         val hasVirtualSelection = selectedFiles.any { it.path.contains("!/") }
                         DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
+                            if (selectedFiles.size == 1 && !hasVirtualSelection) {
+                                val singleTarget = java.io.File(selectedFiles.first().path)
+                                if (!singleTarget.isDirectory) {
+                                    DropdownMenuItem(
+                                        text = { Text("Open with") },
+                                        leadingIcon = { Icon(Icons.Default.OpenInNew, null, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            showMoreMenu = false
+                                            viewModel.clearSelection()
+                                            viewModel.openFileWithChooser(context, singleTarget, forceChooser = true)
+                                        }
+                                    )
+                                    HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+                                }
+                            }
                             if (!hasVirtualSelection) {
                                 DropdownMenuItem(
                                     text = { Text("Copy") },
