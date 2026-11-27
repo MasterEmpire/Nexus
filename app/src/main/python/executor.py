@@ -216,28 +216,45 @@ def get_structure(startpath='/storage/emulated/0', max_depth=2):
 def find_files_by_type(category, startpath='/storage/emulated/0'):
     import os
     extensions = {
-        'docs': ['.pdf', '.docx', '.txt', '.epub', '.xlsx', '.md', '.rtf'],
-        'zips': ['.zip', '.rar', '.7z', '.tar', '.gz'],
+        'docs': ['.pdf', '.doc', '.docx', '.txt', '.epub', '.xls', '.xlsx', '.ppt', '.pptx', '.odt', '.csv', '.md', '.rtf'],
+        'zips': ['.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz'],
         'images': ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic'],
         'videos': ['.mp4', '.mkv', '.mov', '.avi', '.webm'],
         'audio': ['.mp3', '.wav', '.flac', '.m4a', '.ogg'],
         'downloads': []
     }
-    
+
     if category == 'downloads':
         download_path = '/storage/emulated/0/Download'
         if os.path.exists(download_path):
-            return [os.path.join(download_path, f) for f in os.listdir(download_path) if os.path.isfile(os.path.join(download_path, f))]
+            return [os.path.join(download_path, f) for f in os.listdir(download_path) if not f.startswith('.') and os.path.isfile(os.path.join(download_path, f))]
         return []
 
-    target_exts = extensions.get(category, [])
+    target_exts = tuple(extensions.get(category, []))
+    skip_android_sub = {'data', 'obb', 'media'}
     found = []
     for root, dirs, files in os.walk(startpath):
+        dirs[:] = [
+            d for d in dirs
+            if not d.startswith('.') and not (root.endswith('/Android') and d in skip_android_sub)
+        ]
         for file in files:
-            if any(file.lower().endswith(ext) for ext in target_exts):
-                found.append(os.path.join(root, file))
-                if len(found) > 50: return found # Performance cap
-    return found
+            if file.startswith('.'):
+                continue
+            if file.lower().endswith(target_exts):
+                full_path = os.path.join(root, file)
+                try:
+                    mtime = os.path.getmtime(full_path)
+                except Exception:
+                    mtime = 0
+                found.append((mtime, full_path))
+                if len(found) >= 250:
+                    break
+        if len(found) >= 250:
+            break
+
+    found.sort(key=lambda item: item[0], reverse=True)
+    return [p for _, p in found[:100]]
 
 def search_files(query, startpath='/storage/emulated/0'):
     import os
