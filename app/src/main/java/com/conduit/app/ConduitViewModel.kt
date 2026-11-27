@@ -1986,6 +1986,124 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
             }
         }
     }
+    fun getCompressDestinationDir(items: List<FileItem>): File {
+        if ((explorerCategory == "Internal Storage" || explorerCategory == "Downloads") && !explorerPath.contains("!/")) {
+            return File(explorerPath)
+        }
+        val firstParent = items.firstOrNull()?.let { File(it.path).parentFile }
+        return firstParent ?: File("/storage/emulated/0")
+    }
+
+    fun suggestZipName(items: List<FileItem>): String {
+        val destDir = getCompressDestinationDir(items)
+        val baseName = destDir.name.ifBlank { "Archive" }
+        var candidate = "$baseName.zip"
+        var counter = 1
+        while (File(destDir, candidate).exists()) {
+            candidate = "$baseName($counter).zip"
+            counter++
+        }
+        return candidate
+    }
+
+    fun compressSelectedFiles(context: android.content.Context, rawArchiveName: String) {
+        val items = selectedFiles.toList()
+        if (items.isEmpty()) return
+
+        clearSelection()
+        val trimmed = rawArchiveName.trim().ifBlank { "Archive.zip" }
+        val finalName = if (trimmed.lowercase().endsWith(".zip")) trimmed else "$trimmed.zip"
+        val destDir = getCompressDestinationDir(items)
+        val outZip = File(destDir, finalName)
+        val tempZip = File(destDir, ".tmp_nexus_${System.currentTimeMillis()}.zip")
+
+        isDataLoading = true
+        android.widget.Toast.makeText(context, "Compressing ${items.size} item(s)...", android.widget.Toast.LENGTH_SHORT).show()
+
+        viewModelScope.launch(Dispatchers.IO) {
+            var fileCount = 0
+            val buffer = ByteArray(8192)
+            try {
+                if (!destDir.exists() && !destDir.mkdirs()) {
+                    throw Exception("Cannot access destination folder ${destDir.name}")
+                }
+                val tempCanon = tempZip.canonicalPath
+                val outCanon = outZip.canonicalPath
+
+                java.util.zip.ZipOutputStream(java.io.BufferedOutputStream(tempZip.outputStream())).use { zos ->
+                    fun addEntry(file: File, entryPath: String) {
+                        if (!file.exists()) return
+                        val canon = file.canonicalPath
+                        if (canon == tempCanon || canon == outCanon) return
+
+                        if (file.isDirectory) {
+                            val dirEntryName = if (entryPath.endsWith("/")) entryPath else "$entryPath/"
+                            val dirEntry = java.util.zip.ZipEntry(dirEntryName).apply {
+                                time = file.lastModified()
+                            }
+                            zos.putNextEntry(dirEntry)
+                            zos.closeEntry()
+                            val children = file.listFiles() ?: emptyArray()
+                            for (child in children) {
+                                addEntry(child, "$entryPath/${child.name}")
+                            }
+                        } else {
+                            val fileEntry = java.util.zip.ZipEntry(entryPath).apply {
+                                time = file.lastModified()
+                            }
+                            zos.putNextEntry(fileEntry)
+                            file.inputStream().use { input ->
+                                while (true) {
+                                    val read = input.read(buffer)
+                                    if (read <= 0) break
+                                    zos.write(buffer, 0, read)
+                                }
+                            }
+                            zos.closeEntry()
+                            fileCount++
+                        }
+                    }
+
+                    items.forEach { item ->
+                        val src = File(item.path)
+                        if (src.exists()) {
+                            addEntry(src, src.name)
+                        }
+                    }
+                }
+
+                if (outZip.exists() && !outZip.delete()) {
+                    throw Exception("Cannot overwrite existing ${outZip.name}")
+                }
+                if (!tempZip.renameTo(outZip)) {
+                    throw Exception("Failed saving ${outZip.name}")
+                }
+
+                android.media.MediaScannerConnection.scanFile(
+                    context,
+                    arrayOf(outZip.absolutePath),
+                    null,
+                    null
+                )
+
+                withContext(Dispatchers.Main) {
+                    isDataLoading = false
+                    android.widget.Toast.makeText(
+                        context,
+                        "Created ${outZip.name} ($fileCount file(s))",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                    refreshCurrentExplorerView(context)
+                }
+            } catch (e: Exception) {
+                try { if (tempZip.exists()) tempZip.delete() } catch (_: Exception) {}
+                withContext(Dispatchers.Main) {
+                    isDataLoading = false
+                    android.widget.Toast.makeText(context, "Compress failed: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
     fun openFileForEditing(file: File) {
         isDataLoading = true
         viewModelScope.launch(Dispatchers.IO) {
