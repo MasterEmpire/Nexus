@@ -22,27 +22,17 @@ android {
         python {
             version "3.11"
             pip {
-                install "plyer"
+                // Keep only core HTTP/SSL stack; install extra pure-Python libs via Pip Manager
                 install "requests"
-                install "numpy"
-                install "pandas"
-                install "pillow"
-                install "matplotlib"
-                install "lxml"
-                install "beautifulsoup4"
-                install "cryptography"
-                install "pyyaml"
-                install "regex"
-                install "aiohttp"
-                install "psutil"
-                install "pycryptodome"
             }
-            // Ensure Python files are compressed efficiently
-            extractPackages "*"
         }
     }
 
-
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 
     buildFeatures {
         compose true
