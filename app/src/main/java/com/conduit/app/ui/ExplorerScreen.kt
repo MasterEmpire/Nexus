@@ -1363,8 +1363,8 @@ fun FileRow(file: FileItem, isHighlighted: Boolean = false, isPinned: Boolean = 
     val context = LocalContext.current
     val ext = remember(file.name) { file.name.substringAfterLast('.', "").lowercase() }
     val isVid = remember(ext) { listOf("mp4", "mkv", "avi", "mov", "webm").contains(ext) }
-    val isMedia = remember(ext) {
-        ext == "apk" || isVid || listOf("jpg", "jpeg", "png", "webp", "gif", "bmp").contains(ext)
+    val isMedia = remember(file.path, ext) {
+        !file.path.contains("!/") && (ext == "apk" || isVid || listOf("jpg", "jpeg", "png", "webp", "gif", "bmp").contains(ext))
     }
     val cacheKey = remember(file.path, file.lastModified, file.size) { ThumbnailLoader.getCacheKey(file) }
     var mediaThumbnail by remember(cacheKey) { mutableStateOf(ThumbnailLoader.getFromCache(cacheKey)) }
