@@ -15,6 +15,7 @@ class ConduitExecutionService : Service() {
     private val NOTIF_ID = 1337
 
     companion object {
+        const val ACTION_STOP = "com.conduit.nexus.ACTION_STOP"
         @Volatile var isRunning = false
         @Volatile var isWaitingForInput = false
         var outputListener: ((String) -> Unit)? = null
@@ -24,6 +25,13 @@ class ConduitExecutionService : Service() {
 
         fun provideInput(text: String) {
             activeInputQueue?.offer(text)
+        }
+
+        fun stopExecution() {
+            activeInputQueue?.offer("")
+            try {
+                Python.getInstance().getModule("executor").callAttr("request_stop")
+            } catch (_: Exception) {}
         }
     }
 
@@ -35,6 +43,11 @@ class ConduitExecutionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            stopExecution()
+            return START_NOT_STICKY
+        }
+
         val code = intent?.getStringExtra("code")
         
         if (code == null) {
