@@ -2104,6 +2104,102 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
             }
         }
     }
+    fun copySelectedFolderSkeleton(context: android.content.Context) {
+        val folders = selectedFiles
+            .map { File(it.path) }
+            .filter { it.exists() && it.isDirectory }
+        if (folders.isEmpty()) return
+
+        clearSelection()
+        isDataLoading = true
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val sb = StringBuilder()
+            val visited = HashSet<String>()
+            var entryCount = 0
+            var truncated = false
+            val maxLines = 8000
+            var lineCount = 0
+
+            fun appendTree(dir: File, prefix: String) {
+                if (truncated) return
+                val canon = try { dir.canonicalPath } catch (_: Exception) { dir.absolutePath }
+                if (!visited.add(canon)) {
+                    sb.append(prefix).append("└── [Symlink Loop]\n")
+                    lineCount++
+                    return
+                }
+
+                val rawChildren = try {
+                    dir.listFiles()
+                } catch (_: SecurityException) {
+                    null
+                }
+
+                if (rawChildren == null) {
+                    sb.append(prefix).append("└── [Permission Denied]\n")
+                    lineCount++
+                    return
+                }
+
+                val children = rawChildren.sortedWith(
+                    compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() }
+                )
+
+                for (i in children.indices) {
+                    if (lineCount >= maxLines || sb.length >= 450_000) {
+                        truncated = true
+                        return
+                    }
+                    val child = children[i]
+                    val isLast = i == children.lastIndex
+                    val connector = if (isLast) "└── " else "├── "
+                    val childPrefix = prefix + if (isLast) "    " else "│   "
+
+                    sb.append(prefix)
+                        .append(connector)
+                        .append(child.name)
+                        .append(if (child.isDirectory) "/" else "")
+                        .append('\n')
+                    lineCount++
+                    entryCount++
+
+                    if (child.isDirectory) {
+                        appendTree(child, childPrefix)
+                    }
+                }
+            }
+
+            folders.sortedBy { it.name.lowercase() }.forEachIndexed { idx, folder ->
+                if (idx > 0 && !truncated) {
+                    sb.append('\n')
+                    lineCount++
+                }
+                if (!truncated) {
+                    sb.append(folder.name).append("/\n")
+                    lineCount++
+                    entryCount++
+                    appendTree(folder, "")
+                }
+            }
+
+            if (truncated) {
+                sb.append("\n... (truncated: hierarchy exceeded clipboard safety limit)\n")
+            }
+
+            val finalTree = sb.toString().trimEnd()
+            withContext(Dispatchers.Main) {
+                isDataLoading = false
+                val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Folder Skeleton", finalTree))
+                android.widget.Toast.makeText(
+                    context,
+                    "Copied skeleton ($entryCount entries)",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
     fun openFileForEditing(file: File) {
         isDataLoading = true
         viewModelScope.launch(Dispatchers.IO) {
