@@ -64,6 +64,48 @@ class MainActivity : ComponentActivity() {
                 viewModel.explorerCategory = null
                 viewModel.refreshDashboard(this)
             }
+            return
+        }
+
+        if (action == Intent.ACTION_VIEW) {
+            val viewUri = inIntent.data
+            if (viewUri != null) {
+                viewModel.handleExternalViewIntent(this, viewUri, inIntent.type)
+            }
+            return
+        }
+
+        if (action == Intent.ACTION_SEND || action == Intent.ACTION_SEND_MULTIPLE) {
+            val uris = mutableListOf<android.net.Uri>()
+            if (action == Intent.ACTION_SEND) {
+                @Suppress("DEPRECATION")
+                val singleUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    inIntent.getParcelableExtra(Intent.EXTRA_STREAM, android.net.Uri::class.java)
+                } else {
+                    inIntent.getParcelableExtra(Intent.EXTRA_STREAM)
+                }
+                if (singleUri != null) uris.add(singleUri)
+            } else {
+                @Suppress("DEPRECATION")
+                val multiUris = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    inIntent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, android.net.Uri::class.java)
+                } else {
+                    inIntent.getParcelableArrayListExtra(Intent.EXTRA_STREAM)
+                }
+                if (multiUris != null) uris.addAll(multiUris)
+            }
+
+            if (uris.isEmpty() && inIntent.clipData != null) {
+                val cd = inIntent.clipData!!
+                for (i in 0 until cd.itemCount) {
+                    cd.getItemAt(i).uri?.let { uris.add(it) }
+                }
+            }
+
+            val sharedText = inIntent.getStringExtra(Intent.EXTRA_TEXT)
+            if (uris.isNotEmpty() || !sharedText.isNullOrBlank()) {
+                viewModel.handleIncomingShareIntent(this, uris, sharedText)
+            }
         }
     }
 
