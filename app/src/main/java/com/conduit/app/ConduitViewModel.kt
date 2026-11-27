@@ -218,6 +218,12 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         private set
     var showTransferConflictDialog by mutableStateOf(false)
     var transferConflicts by mutableStateOf<List<String>>(emptyList())
+    var shareSaveQueue by mutableStateOf<List<File>>(emptyList())
+        private set
+    var isShareSaveMode by mutableStateOf(false)
+        private set
+    var showShareConflictDialog by mutableStateOf(false)
+    var shareConflicts by mutableStateOf<List<String>>(emptyList())
 
     var isPickerMode by mutableStateOf(savedStateHandle.get<Boolean>("isPickerMode") ?: false)
     var pickerAllowMultiple by mutableStateOf(savedStateHandle.get<Boolean>("pickerAllowMultiple") ?: false)
@@ -286,7 +292,7 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
             SortOrder.DATE_NEW
         }
 
-        if (savedStateHandle.get<String>("currentView") == null && !isPickerMode) {
+        if (savedStateHandle.get<String>("currentView") == null && !isPickerMode && !isShareSaveMode && editingFile == null) {
             when (defaultBootSection) {
                 "AI Chat" -> { currentView = "chat"; selectedTab = 0 }
                 "Manual Lab" -> { currentView = "manual" }
@@ -1447,13 +1453,15 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                 context.packageManager.queryIntentActivities(intent, 0)
             }
 
-            val externalOptions = resolveInfos.map { ri ->
-                AppOption(
-                    packageName = ri.activityInfo.packageName,
-                    label = ri.loadLabel(context.packageManager).toString(),
-                    icon = ri.loadIcon(context.packageManager)
-                )
-            }.distinctBy { it.packageName }
+            val externalOptions = resolveInfos
+                .filter { it.activityInfo.packageName != context.packageName }
+                .map { ri ->
+                    AppOption(
+                        packageName = ri.activityInfo.packageName,
+                        label = ri.loadLabel(context.packageManager).toString(),
+                        icon = ri.loadIcon(context.packageManager)
+                    )
+                }.distinctBy { it.packageName }
 
             val options = if (isEditableTextFile(file.name)) {
                 val nexusOption = AppOption(
@@ -2197,6 +2205,264 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                     "Copied skeleton ($entryCount entries)",
                     android.widget.Toast.LENGTH_SHORT
                 ).show()
+            }
+        }
+    }
+    private fun resolveUriDisplayName(
+        context: android.content.Context,
+        uri: android.net.Uri,
+        fallbackMime: String?
+    ): String {
+        var resolved: String? = null
+        if (uri.scheme == "content") {
+            try {
+                context.contentResolver.query(
+                    uri,
+                    arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (idx != -1) resolved = cursor.getString(idx)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        if (resolved.isNullOrBlank()) {
+            resolved = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
+        }
+        val clean = resolved?.replace(Regex("[\\\\/:*?\"<>|]"), "_")?.trim().orEmpty()
+        if (clean.isNotBlank()) return clean
+
+        val ext = fallbackMime?.let {
+            android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(it)
+        }
+        return if (!ext.isNullOrBlank()) "shared_${System.currentTimeMillis()}.$ext"
+        else "shared_${System.currentTimeMillis()}"
+    }
+
+    fun handleExternalViewIntent(
+        context: android.content.Context,
+        uri: android.net.Uri,
+        mimeType: String?
+    ) {
+        currentView = "explorer"
+        selectedTab = 1
+        isDataLoading = true
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val directFile = if (uri.scheme == "file") uri.path?.let { File(it) } else null
+                if (directFile != null && directFile.exists()) {
+                    withContext(Dispatchers.Main) {
+                        isDataLoading = false
+                        if (directFile.extension.lowercase() == "zip") {
+                            loadExplorerFolder("${directFile.absolutePath}!/", context)
+                        } else {
+                            openFileForEditing(directFile)
+                        }
+                    }
+                    return@launch
+                }
+
+                val displayName = resolveUriDisplayName(context, uri, mimeType)
+                val openDir = File(context.cacheDir, "external_opens").apply {
+                    if (exists()) listFiles()?.forEach { it.delete() }
+                    mkdirs()
+                }
+                val cachedFile = File(openDir, displayName)
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    cachedFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                } ?: throw Exception("Cannot read shared file stream")
+
+                val isZip = displayName.lowercase().endsWith(".zip") ||
+                    (mimeType?.lowercase()?.contains("zip") == true)
+
+                withContext(Dispatchers.Main) {
+                    isDataLoading = false
+                    if (isZip) {
+                        loadExplorerFolder("${cachedFile.absolutePath}!/", context)
+                    } else {
+                        openFileForEditing(cachedFile)
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    isDataLoading = false
+                    android.widget.Toast.makeText(
+                        context,
+                        "Cannot open file: ${e.message}",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+    }
+
+    fun handleIncomingShareIntent(
+        context: android.content.Context,
+        uris: List<android.net.Uri>,
+        sharedText: String?
+    ) {
+        currentView = "explorer"
+        selectedTab = 1
+        isDataLoading = true
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val staged = mutableListOf<File>()
+            try {
+                val stagingDir = File(context.cacheDir, "share_staging").apply {
+                    if (exists()) deleteRecursively()
+                    mkdirs()
+                }
+
+                uris.forEach { uri ->
+                    val mime = try { context.contentResolver.getType(uri) } catch (_: Exception) { null }
+                    val baseName = resolveUriDisplayName(context, uri, mime)
+                    var target = File(stagingDir, baseName)
+                    var counter = 1
+                    val nameNoExt = if (baseName.contains(".")) baseName.substringBeforeLast(".") else baseName
+                    val ext = if (baseName.contains(".")) "." + baseName.substringAfterLast(".") else ""
+                    while (target.exists()) {
+                        target = File(stagingDir, "$nameNoExt($counter)$ext")
+                        counter++
+                    }
+
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        target.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    if (target.exists()) staged.add(target)
+                }
+
+                if (staged.isEmpty() && !sharedText.isNullOrBlank()) {
+                    val noteFile = File(stagingDir, "shared_text_${System.currentTimeMillis() % 100000}.txt")
+                    noteFile.writeText(sharedText)
+                    staged.add(noteFile)
+                }
+
+                withContext(Dispatchers.Main) {
+                    isDataLoading = false
+                    if (staged.isNotEmpty()) {
+                        shareSaveQueue = staged
+                        isShareSaveMode = true
+                        clearSelection()
+                    } else {
+                        android.widget.Toast.makeText(context, "Nothing readable was shared", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    isDataLoading = false
+                    android.widget.Toast.makeText(context, "Failed reading shared file: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    fun cancelShareSave() {
+        shareSaveQueue.forEach { try { it.delete() } catch (_: Exception) {} }
+        shareSaveQueue = emptyList()
+        isShareSaveMode = false
+        showShareConflictDialog = false
+        shareConflicts = emptyList()
+    }
+
+    fun startShareSave(context: android.content.Context) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val destDir = resolveDestinationDirectory()
+            val conflicts = shareSaveQueue.mapNotNull { staged ->
+                if (File(destDir, staged.name).exists()) staged.name else null
+            }
+            withContext(Dispatchers.Main) {
+                if (conflicts.isNotEmpty()) {
+                    shareConflicts = conflicts
+                    showShareConflictDialog = true
+                } else {
+                    executeShareSave(context, ConflictResolution.REPLACE)
+                }
+            }
+        }
+    }
+
+    fun executeShareSave(
+        context: android.content.Context,
+        resolution: ConflictResolution = ConflictResolution.REPLACE
+    ) {
+        val destDir = resolveDestinationDirectory()
+        val items = shareSaveQueue
+
+        shareSaveQueue = emptyList()
+        isShareSaveMode = false
+        showShareConflictDialog = false
+        shareConflicts = emptyList()
+
+        if (items.isEmpty()) return
+
+        isDataLoading = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val savedPaths = mutableListOf<String>()
+            var skippedCount = 0
+            val errors = mutableListOf<String>()
+
+            try {
+                if (!destDir.exists() && !destDir.mkdirs()) {
+                    throw Exception("Cannot access folder ${destDir.name}")
+                }
+
+                items.forEach { src ->
+                    if (!src.exists()) return@forEach
+                    val outFile = resolveDestinationFile(destDir, src.name, resolution)
+                    if (outFile == null) {
+                        skippedCount++
+                    } else {
+                        try {
+                            copyFileOrDir(src, outFile, overwrite = (resolution == ConflictResolution.REPLACE))
+                            savedPaths.add(outFile.absolutePath)
+                        } catch (e: Exception) {
+                            errors.add("${src.name}: ${e.message ?: "Failed"}")
+                        }
+                    }
+                    try { src.delete() } catch (_: Exception) {}
+                }
+
+                if (savedPaths.isNotEmpty()) {
+                    android.media.MediaScannerConnection.scanFile(
+                        context,
+                        savedPaths.toTypedArray(),
+                        null,
+                        null
+                    )
+                }
+
+                withContext(Dispatchers.Main) {
+                    isDataLoading = false
+                    if (savedPaths.isNotEmpty()) {
+                        highlightedPath = savedPaths.first()
+                    }
+                    val msg = when {
+                        errors.isNotEmpty() && savedPaths.isEmpty() -> "Save failed: ${errors.first()}"
+                        savedPaths.isEmpty() && skippedCount > 0 -> "Skipped $skippedCount item(s)"
+                        skippedCount > 0 -> "Saved ${savedPaths.size} item(s) ($skippedCount skipped)"
+                        else -> "Saved ${savedPaths.size} item(s) to ${destDir.name}"
+                    }
+                    android.widget.Toast.makeText(
+                        context,
+                        msg,
+                        if (errors.isNotEmpty()) android.widget.Toast.LENGTH_LONG else android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                    refreshCurrentExplorerView(context)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    isDataLoading = false
+                    android.widget.Toast.makeText(context, "Save error: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                }
             }
         }
     }
