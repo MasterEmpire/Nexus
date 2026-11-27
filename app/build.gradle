@@ -24,6 +24,18 @@ android {
             pip {
                 install "plyer"
                 install "requests"
+                install "numpy"
+                install "pandas"
+                install "pillow"
+                install "matplotlib"
+                install "lxml"
+                install "beautifulsoup4"
+                install "cryptography"
+                install "pyyaml"
+                install "regex"
+                install "aiohttp"
+                install "psutil"
+                install "pycryptodome"
             }
             // Ensure Python files are compressed efficiently
             extractPackages "*"
