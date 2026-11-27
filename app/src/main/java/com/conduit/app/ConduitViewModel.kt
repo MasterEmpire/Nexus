@@ -412,6 +412,7 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
     var manualInputPrompt by mutableStateOf("")
     var manualInputText by mutableStateOf("")
     var savedScripts by mutableStateOf<List<SavedScript>>(emptyList())
+    var activeScriptId by mutableStateOf<String?>(savedStateHandle.get<String>("activeScriptId"))
     var selectedTab by mutableIntStateOf(if (savedStateHandle.get<String>("currentView") == "chat") 0 else 1)
     var quickPills by mutableStateOf<List<QuickPill>>(listOf(
         QuickPill(title = "List Files", content = "List all files in current directory"),
@@ -489,21 +490,88 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         file.writeText(json.toString())
     }
 
-    fun saveScript(context: android.content.Context, code: String, customTitle: String? = null) {
+    private fun generateSmartTitle(code: String): String {
+        val lines = code.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val first = lines.firstOrNull() ?: "Untitled Script"
+        val base = when {
+            first.startsWith("#") -> first.removePrefix("#").trim().take(34)
+            else -> {
+                val defMatch = Regex("""^(?:async\s+)?def\s+([a-zA-Z_]\w*)\s*\(""").find(
+                    lines.take(10).firstOrNull { it.startsWith("def ") || it.startsWith("async def ") } ?: ""
+                )
+                val classMatch = Regex("""^class\s+([a-zA-Z_]\w*)""").find(
+                    lines.take(10).firstOrNull { it.startsWith("class ") } ?: ""
+                )
+                when {
+                    defMatch != null -> "fn: ${defMatch.groupValues[1]}"
+                    classMatch != null -> "class: ${classMatch.groupValues[1]}"
+                    else -> first.take(30)
+                }
+            }
+        }.ifBlank { "Untitled Script" }
+
+        val timeSuffix = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
+        val collision = savedScripts.any { it.id != activeScriptId && it.title.equals(base, ignoreCase = true) }
+        return if (collision) "$base • $timeSuffix" else base
+    }
+
+    fun selectScript(script: SavedScript) {
+        activeScriptId = script.id
+        savedStateHandle["activeScriptId"] = script.id
+        manualCode = script.code
+    }
+
+    fun createNewScript() {
+        activeScriptId = null
+        savedStateHandle.remove<String>("activeScriptId")
+        manualCode = ""
+        manualConsoleOutput = ""
+    }
+
+    fun saveScript(context: android.content.Context, code: String, customTitle: String? = null, isPaste: Boolean = false) {
         if (code.isBlank()) return
-        val existing = savedScripts.find { it.code.trim() == code.trim() }
-        if (existing != null) return // Deduplicate
+        val currentId = activeScriptId
+        val activeExisting = if (currentId != null) savedScripts.find { it.id == currentId } else null
+
+        if (activeExisting != null) {
+            val updatedTitle = customTitle ?: if (isPaste && activeExisting.title.startsWith("Script ")) {
+                generateSmartTitle(code)
+            } else {
+                activeExisting.title
+            }
+            val updated = activeExisting.copy(
+                title = updatedTitle,
+                code = code,
+                timestamp = System.currentTimeMillis()
+            )
+            savedScripts = listOf(updated) + savedScripts.filter { it.id != currentId }
+            persistScripts(context)
+            return
+        }
+
+        val duplicate = savedScripts.find { it.code.trim() == code.trim() }
+        if (duplicate != null) {
+            activeScriptId = duplicate.id
+            savedStateHandle["activeScriptId"] = duplicate.id
+            return
+        }
 
         val newScript = SavedScript(
-            title = customTitle ?: "Script ${java.text.SimpleDateFormat("MMM dd, HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}",
+            title = customTitle ?: generateSmartTitle(code),
             code = code
         )
+        activeScriptId = newScript.id
+        savedStateHandle["activeScriptId"] = newScript.id
         savedScripts = (listOf(newScript) + savedScripts).take(50)
         persistScripts(context)
     }
 
     fun deleteScript(context: android.content.Context, id: String) {
         savedScripts = savedScripts.filter { it.id != id }
+        if (activeScriptId == id) {
+            activeScriptId = null
+            savedStateHandle.remove<String>("activeScriptId")
+        }
         persistScripts(context)
     }
 
@@ -512,8 +580,20 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         persistScripts(context)
     }
 
+    fun clearManualConsole() {
+        manualConsoleOutput = ""
+    }
+
+    fun stopManualCode() {
+        ConduitExecutionService.stopExecution()
+        isManualAwaitingInput = false
+        manualInputPrompt = ""
+        manualInputText = ""
+    }
+
     fun runManualCode(context: android.content.Context) {
         if (ConduitExecutionService.isRunning) return
+        saveScript(context, manualCode)
         manualConsoleOutput = ""
         isManualRunning = true
         isManualAwaitingInput = false
