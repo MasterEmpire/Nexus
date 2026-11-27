@@ -51,6 +51,7 @@ fun SidebarContent(
 
         NavigationDrawerItem(label = { Text("Python REPL") }, selected = false, onClick = onTerminalClick, icon = { Icon(Icons.Default.SettingsEthernet, null) })
         NavigationDrawerItem(label = { Text("Interpreter Settings") }, selected = false, onClick = onInterpreterClick, icon = { Icon(Icons.Default.Tune, null) })
+        NavigationDrawerItem(label = { Text("Pip Packages") }, selected = false, onClick = onPipClick, icon = { Icon(Icons.Default.Archive, null) })
         
         HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
         
