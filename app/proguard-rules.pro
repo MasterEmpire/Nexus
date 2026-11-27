@@ -12,4 +12,5 @@
 
 # Keep Compose and Kotlin Reflection
 -keep class androidx.compose.material.icons.** { *; }
+-dontwarn androidx.compose.material.icons.**
 -keep class com.conduit.nexus.** { *; }
