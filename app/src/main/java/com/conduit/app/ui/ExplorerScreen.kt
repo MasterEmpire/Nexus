@@ -225,6 +225,9 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
         }
     ) {
         Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+            if (viewModel.isPickerMode) {
+                PickerModeBanner(viewModel = viewModel, context = context)
+            }
 
 
             Box(
@@ -365,6 +368,9 @@ fun ExplorerScreen(viewModel: ConduitViewModel) {
         ) {
             Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0D1117)) {
                 Column(modifier = Modifier.fillMaxSize()) {
+                    if (viewModel.isPickerMode) {
+                        PickerModeBanner(viewModel = viewModel, context = context)
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth().background(Color(0xFF161B22)).padding(start = 4.dp, top = 2.dp, bottom = 2.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -1592,3 +1598,37 @@ fun FileRow(file: FileItem, isHighlighted: Boolean = false, isPinned: Boolean = 
 }
 
 // Helper Models relocated to Models.kt
+@Composable
+private fun PickerModeBanner(viewModel: ConduitViewModel, context: Context) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        color = Color(0xFF00E5FF).copy(alpha = 0.12f),
+        shape = RoundedCornerShape(10.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF00E5FF).copy(alpha = 0.45f))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Default.AttachFile, null, tint = Color(0xFF00E5FF), modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = if (viewModel.pickerAllowMultiple) "Select files & tap Attach" else "Tap a file to attach",
+                    color = Color(0xFF00E5FF),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            TextButton(
+                onClick = { viewModel.cancelPicking(context) },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+            ) {
+                Text("Cancel", color = Color(0xFFFF5252), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
