@@ -157,28 +157,7 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                     val timeStr = FileScanner.formatTimestamp(f.lastModified())
                     val parentFolder = path.split("/").dropLast(1).lastOrNull() ?: ""
                     val metaParts = listOf(sizeStr, timeStr, parentFolder).filter { it.isNotBlank() }
-                    val isDir = f.isDirectory
-                    val ext = if (isDir) "" else f.extension.lowercase()
-
-                    val fileIcon = when {
-                        isDir -> Icons.Default.Folder
-                        listOf("png", "jpg", "jpeg", "webp", "gif").contains(ext) -> Icons.Default.Image
-                        listOf("mp4", "mkv", "avi", "mov", "webm").contains(ext) -> Icons.Default.Videocam
-                        listOf("mp3", "wav", "ogg", "flac").contains(ext) -> Icons.Default.MusicNote
-                        ext == "zip" -> Icons.Default.Archive
-                        ext == "pdf" -> Icons.Default.PictureAsPdf
-                        ext == "apk" -> Icons.Default.Android
-                        else -> Icons.Default.Description
-                    }
-
-                    val fileColor = when {
-                        isDir -> Color(0xFF00E5FF)
-                        listOf("png", "jpg", "jpeg", "webp", "gif").contains(ext) -> Color(0xFFFF5252)
-                        listOf("mp4", "mkv", "avi", "mov", "webm").contains(ext) -> Color(0xFF7C4DFF)
-                        listOf("mp3", "wav", "ogg", "flac").contains(ext) -> Color(0xFF00B0FF)
-                        ext == "zip" -> Color(0xFFFF4081)
-                        else -> Color.Gray
-                    }
+                    val (fileIcon, fileColor) = FileScanner.resolveIconAndColor(f.name, isDirectory = f.isDirectory)
 
                     FileItem(
                         name = f.name,
@@ -828,13 +807,13 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                             val timeStr = FileScanner.formatTimestamp(f.lastModified())
                             val parentFolder = path.split("/").dropLast(1).lastOrNull() ?: ""
                             val metaParts = listOf(sizeStr, timeStr, parentFolder).filter { it.isNotBlank() }
-                            val isDir = f.isDirectory
+                            val (fileIcon, fileColor) = FileScanner.resolveIconAndColor(f.name, isDirectory = f.isDirectory)
 
                             FileItem(
                                 name = f.name,
                                 meta = metaParts.joinToString(" • "),
-                                icon = if (isDir) Icons.Default.Folder else Icons.Default.Description,
-                                color = if (isDir) Color(0xFF00E5FF) else Color(0xFFFFD740),
+                                icon = fileIcon,
+                                color = fileColor,
                                 path = f.absolutePath,
                                 lastModified = f.lastModified(),
                                 size = f.length()
@@ -855,26 +834,23 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                     val python = com.chaquo.python.Python.getInstance()
                     val executor = python.getModule("executor")
                     val list = executor.callAttr("find_files_by_type", cat.lowercase()).asList()
-                    list.map {
+                    list.mapNotNull {
                         val p = it.toString()
                         val f = File(p)
-                        val sizeStr = if (f.length() > 0) {
-                            val bytes = f.length()
-                            val units = arrayOf("B", "KB", "MB", "GB")
-                            val i = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
-                            String.format("%.1f %s", bytes / Math.pow(1024.0, i.toDouble()), units[i])
-                        } else "0 B"
+                        if (!f.exists() || f.isDirectory) return@mapNotNull null
 
+                        val sizeStr = FileScanner.formatSize(f.length())
                         val lastMod = f.lastModified()
                         val timeStr = FileScanner.formatTimestamp(lastMod)
                         val parentFolder = p.split("/").dropLast(1).lastOrNull() ?: ""
                         val metaParts = listOf(sizeStr, timeStr, parentFolder).filter { it.isNotBlank() }
+                        val (fileIcon, fileColor) = FileScanner.resolveIconAndColor(f.name, isDirectory = false)
 
                         FileItem(
                             name = f.name,
                             meta = metaParts.joinToString(" • "),
-                            icon = if (cat == "Zips") Icons.Default.Archive else Icons.Default.Description,
-                            color = if (cat == "Zips") Color(0xFFFF4081) else Color(0xFFFFD740),
+                            icon = fileIcon,
+                            color = fileColor,
                             path = p,
                             lastModified = lastMod,
                             size = f.length()
