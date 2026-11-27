@@ -114,6 +114,7 @@ fun ConduitIDE(viewModel: ConduitViewModel) {
                                 val titleText = when (viewModel.currentView) {
                                     "chat" -> viewModel.sessions.find { it.first == viewModel.currentSessionId }?.second ?: "New Conversation"
                                     "settings" -> "Settings"
+                                    "pip" -> "Package Manager"
                                     else -> "Conduit AI"
                                 }
                                 Text(
@@ -265,6 +266,7 @@ fun ConduitIDE(viewModel: ConduitViewModel) {
                         onRun = { viewModel.runManualCode(context) }
                     )
                     "settings" -> SettingsScreen(viewModel)
+                    "pip" -> PipScreen()
                 }
             }
         }
