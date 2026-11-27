@@ -64,8 +64,9 @@ object SharedRuntimeLoader {
                         Log.d(TAG, "✅ Loaded from shared storage location (${sharedFile.absolutePath}): ${sharedFile.length()} bytes")
                         return true
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed loading from ${sharedFile.absolutePath}: ${e.message}")
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Failed loading from ${sharedFile.absolutePath}: ${t.message}")
+                    CrashBootstrap.logHandledThrowable(context, TAG, t)
                 }
             }
         }
@@ -151,8 +152,9 @@ object SharedRuntimeLoader {
             dexElementsField.set(appPathList, combined)
             Log.d(TAG, "🎉 Successfully merged $newLen runtime dex elements into application PathClassLoader!")
             true
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Failed injecting DEX: ${e.message}", e)
+        } catch (t: Throwable) {
+            Log.e(TAG, "❌ Failed injecting DEX: ${t.message}", t)
+            CrashBootstrap.logHandledThrowable(context, TAG, t)
             false
         }
     }
@@ -183,8 +185,9 @@ object SharedRuntimeLoader {
                 Log.e(TAG, "Failed downloading runtime pack: HTTP ${resp.code}")
                 null
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Download error: ${e.message}")
+        } catch (t: Throwable) {
+            Log.e(TAG, "Download error: ${t.message}")
+            CrashBootstrap.logHandledThrowable(context, TAG, t)
             null
         }
     }
