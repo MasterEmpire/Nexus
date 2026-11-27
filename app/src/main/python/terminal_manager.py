@@ -2,6 +2,12 @@ import sys
 import io
 import traceback
 
+try:
+    import pip_manager
+    pip_manager.ensure_site_dir()
+except Exception:
+    pass
+
 # Persistent dictionary to store variables across terminal inputs
 terminal_globals = {}
 
@@ -13,11 +19,10 @@ def run_repl_line(code):
     
     # Handle Shell Magic (!command)
     if code.strip().startswith('!'):
-        cmd = code.strip()[1:]
-        if cmd.startswith('pip '):
+        cmd = code.strip()[1:].strip()
+        if cmd == 'pip' or cmd.startswith('pip '):
             import pip_manager
-            pkg = cmd.replace('pip install', '').strip()
-            return pip_manager.install_package(pkg)
+            return pip_manager.handle_pip_command(cmd)
         else:
             return os.popen(cmd).read()
 
