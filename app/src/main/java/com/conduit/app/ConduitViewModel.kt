@@ -345,11 +345,24 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         val intent = pendingOpenIntent ?: return
         val ext = file.extension.lowercase()
 
+        if (packageName == "__nexus_editor__") {
+            if (saveAsDefault && ext.isNotBlank()) {
+                clearExtensionDefault(context, ext)
+            }
+            showAppChooserDialog = false
+            pendingOpenFile = null
+            pendingOpenIntent = null
+            pendingAppOptions = emptyList()
+            openFileForEditing(file)
+            return
+        }
+
         if (saveAsDefault && ext.isNotBlank()) {
             setExtensionDefault(context, ext, packageName)
         }
 
         intent.setPackage(packageName)
+        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
         try {
             context.startActivity(intent)
         } catch (e: Exception) {
@@ -1284,6 +1297,48 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
                             }
                         }
                     }
+                } else if (entryFileName.lowercase().endsWith(".apk")) {
+                    isDataLoading = true
+                    android.widget.Toast.makeText(context, "Preparing APK installer...", android.widget.Toast.LENGTH_SHORT).show()
+                    viewModelScope.launch(Dispatchers.IO) {
+                        try {
+                            val zipPath = fileItem.path.substringBefore("!/")
+                            val internalPath = fileItem.path.substringAfter("!/")
+                            val apkCacheDir = File(context.cacheDir, "apk_installs").apply {
+                                if (exists()) listFiles()?.forEach { it.delete() }
+                                mkdirs()
+                            }
+                            val outApk = File(apkCacheDir, entryFileName)
+                            var found = false
+                            ZipFile(File(zipPath)).use { zip ->
+                                val entries = zip.entries()
+                                while (entries.hasMoreElements()) {
+                                    val entry = entries.nextElement()
+                                    val entryName = normalizeZipEntryName(entry.name)
+                                    if (entryName == internalPath) {
+                                        zip.getInputStream(entry).use { input ->
+                                            outApk.outputStream().use { output -> input.copyTo(output) }
+                                        }
+                                        found = true
+                                        break
+                                    }
+                                }
+                            }
+                            withContext(Dispatchers.Main) {
+                                isDataLoading = false
+                                if (found && outApk.exists()) {
+                                    installApkFile(context, outApk)
+                                } else {
+                                    android.widget.Toast.makeText(context, "APK not found in archive", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        } catch (e: Exception) {
+                            withContext(Dispatchers.Main) {
+                                isDataLoading = false
+                                android.widget.Toast.makeText(context, "Cannot prepare APK: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
                 } else {
                     android.widget.Toast.makeText(context, "Please extract the archive to open this file.", android.widget.Toast.LENGTH_SHORT).show()
                 }
@@ -1295,79 +1350,150 @@ class ConduitViewModel(private val savedStateHandle: SavedStateHandle) : ViewMod
         if (file.isDirectory) {
             loadFolder(file.absolutePath)
         } else {
-            if (file.extension.lowercase() == "zip") {
+            val ext = file.extension.lowercase()
+            if (ext == "zip") {
                 loadFolder("${file.absolutePath}!/")
+                return
+            }
+
+            val defaultPackage = if (ext.isNotBlank()) extensionDefaults[ext] else null
+            if (defaultPackage != null) {
+                val isInstalled = try {
+                    context.packageManager.getPackageInfo(defaultPackage, 0)
+                    true
+                } catch (_: Exception) { false }
+
+                if (isInstalled) {
+                    try {
+                        val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
+                        val explicitMime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+                        val mimeType = explicitMime ?: if (isEditableTextFile(file.name)) "text/plain" else (context.contentResolver.getType(uri) ?: "*/*")
+                        val intent = Intent(Intent.ACTION_VIEW).apply {
+                            setDataAndType(uri, mimeType)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                            setPackage(defaultPackage)
+                        }
+                        context.startActivity(intent)
+                        return
+                    } catch (_: Exception) {}
+                } else {
+                    clearExtensionDefault(context, ext)
+                }
+            }
+
+            if (ext == "apk") {
+                installApkFile(context, file)
             } else if (isEditableTextFile(file.name)) {
                 openFileForEditing(file)
             } else {
-                try {
-                    val ext = file.extension.lowercase()
-                    val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
-                    val explicitMime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
-                    val mimeType = explicitMime ?: context.contentResolver.getType(uri) ?: "*/*"
-
-                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                        setDataAndType(uri, mimeType)
-                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-
-                    val defaultPackage = extensionDefaults[ext]
-                    if (defaultPackage != null) {
-                        val isInstalled = try {
-                            context.packageManager.getPackageInfo(defaultPackage, 0)
-                            true
-                        } catch (_: Exception) { false }
-
-                        if (isInstalled) {
-                            intent.setPackage(defaultPackage)
-                            try {
-                                context.startActivity(intent)
-                                return
-                            } catch (_: Exception) {}
-                        } else {
-                            clearExtensionDefault(context, ext)
-                        }
-                    }
-
-                    val resolveInfos = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                        context.packageManager.queryIntentActivities(
-                            intent,
-                            android.content.pm.PackageManager.ResolveInfoFlags.of(0)
-                        )
-                    } else {
-                        context.packageManager.queryIntentActivities(intent, 0)
-                    }
-
-                    if (resolveInfos.isEmpty()) {
-                        android.widget.Toast.makeText(context, "No app found to open this file", android.widget.Toast.LENGTH_SHORT).show()
-                        return
-                    }
-
-                    if (resolveInfos.size == 1) {
-                        intent.setPackage(resolveInfos.first().activityInfo.packageName)
-                        context.startActivity(intent)
-                        return
-                    }
-
-                    val options = resolveInfos.map { ri ->
-                        AppOption(
-                            packageName = ri.activityInfo.packageName,
-                            label = ri.loadLabel(context.packageManager).toString(),
-                            icon = ri.loadIcon(context.packageManager)
-                        )
-                    }.distinctBy { it.packageName }
-
-                    pendingOpenFile = file
-                    pendingOpenIntent = intent
-                    pendingAppOptions = options
-                    showAppChooserDialog = true
-                } catch (e: Exception) {
-                    android.widget.Toast.makeText(context, "Error opening file: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
-                }
+                openFileWithChooser(context, file, forceChooser = false)
             }
         }
     }
 
+    fun installApkFile(context: android.content.Context, apkFile: File) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            if (!context.packageManager.canRequestPackageInstalls()) {
+                android.widget.Toast.makeText(
+                    context,
+                    "Enable 'Install unknown apps' for Nexus to install APKs",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+                val settingsIntent = Intent(
+                    android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    android.net.Uri.parse("package:${context.packageName}")
+                ).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(settingsIntent)
+                return
+            }
+        }
+        try {
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", apkFile)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            android.widget.Toast.makeText(context, "Error launching installer: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+
+    fun openFileWithChooser(context: android.content.Context, file: File, forceChooser: Boolean = true) {
+        try {
+            val ext = file.extension.lowercase()
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
+            val explicitMime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+            val mimeType = when {
+                ext == "apk" -> "application/vnd.android.package-archive"
+                explicitMime != null -> explicitMime
+                isEditableTextFile(file.name) -> "text/plain"
+                else -> context.contentResolver.getType(uri) ?: "*/*"
+            }
+
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, mimeType)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+
+            val resolveInfos = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                context.packageManager.queryIntentActivities(
+                    intent,
+                    android.content.pm.PackageManager.ResolveInfoFlags.of(0)
+                )
+            } else {
+                context.packageManager.queryIntentActivities(intent, 0)
+            }
+
+            val externalOptions = resolveInfos.map { ri ->
+                AppOption(
+                    packageName = ri.activityInfo.packageName,
+                    label = ri.loadLabel(context.packageManager).toString(),
+                    icon = ri.loadIcon(context.packageManager)
+                )
+            }.distinctBy { it.packageName }
+
+            val options = if (isEditableTextFile(file.name)) {
+                val nexusOption = AppOption(
+                    packageName = "__nexus_editor__",
+                    label = "Nexus Editor (Built-in)",
+                    icon = context.applicationInfo.loadIcon(context.packageManager)
+                )
+                listOf(nexusOption) + externalOptions
+            } else {
+                externalOptions
+            }
+
+            if (options.isEmpty()) {
+                android.widget.Toast.makeText(context, "No app found to open this file", android.widget.Toast.LENGTH_SHORT).show()
+                return
+            }
+
+            if (!forceChooser && options.size == 1) {
+                launchPendingAppForSingle(context, intent, options.first().packageName)
+                return
+            }
+
+            pendingOpenFile = file
+            pendingOpenIntent = intent
+            pendingAppOptions = options
+            showAppChooserDialog = true
+        } catch (e: Exception) {
+            android.widget.Toast.makeText(context, "Error opening file: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun launchPendingAppForSingle(context: android.content.Context, intent: Intent, packageName: String) {
+        intent.setPackage(packageName)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            android.widget.Toast.makeText(context, "Error opening file: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
     fun askAiAboutFile(file: File) {
         addStagedFile(file)
         currentView = "chat"
