@@ -3,6 +3,43 @@ import io
 import traceback
 import os
 import builtins
+import time
+import threading
+import ctypes
+
+_stop_requested = False
+_active_thread_id = None
+_orig_sleep = time.sleep
+
+
+def _interruptible_sleep(seconds):
+    end = time.monotonic() + max(0.0, float(seconds))
+    while True:
+        if _stop_requested:
+            raise KeyboardInterrupt("Execution stopped by user")
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            break
+        _orig_sleep(min(0.1, remaining))
+
+
+time.sleep = _interruptible_sleep
+
+
+def request_stop():
+    global _stop_requested
+    _stop_requested = True
+    tid = _active_thread_id
+    if tid is not None:
+        try:
+            res = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                ctypes.c_ulong(tid), ctypes.py_object(KeyboardInterrupt)
+            )
+            if res > 1:
+                ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(tid), None)
+        except Exception:
+            pass
+    return "Stop requested"
 
 # Initialize to user storage immediately
 try:
@@ -46,7 +83,10 @@ def reset_state():
 import ast
 
 def run_code(code, output_callback=None, input_callback=None):
-    global agent_globals
+    global agent_globals, _stop_requested, _active_thread_id
+    _stop_requested = False
+    _active_thread_id = threading.get_ident()
+
     if current_profile == 'Isolated':
         agent_globals = {'__name__': '__main__'}
         try: os.chdir('/storage/emulated/0')
@@ -55,6 +95,8 @@ def run_code(code, output_callback=None, input_callback=None):
     # Custom writer that mimics a stream
     class FastStream:
         def write(self, s):
+            if _stop_requested:
+                raise KeyboardInterrupt("Execution stopped by user")
             if output_callback:
                 try: output_callback.onOutput(s)
                 except: pass
@@ -63,10 +105,16 @@ def run_code(code, output_callback=None, input_callback=None):
     # Custom reader that bridges stdin to Kotlin
     class FastStdin(io.TextIOBase):
         def readline(self):
+            if _stop_requested:
+                raise KeyboardInterrupt("Execution stopped by user")
             if input_callback:
                 try:
                     res = input_callback.onInputRequested("")
+                    if _stop_requested:
+                        raise KeyboardInterrupt("Execution stopped by user")
                     return str(res) if str(res).endswith('\n') else str(res) + '\n'
+                except KeyboardInterrupt:
+                    raise
                 except Exception:
                     return '\n'
             return '\n'
@@ -77,13 +125,19 @@ def run_code(code, output_callback=None, input_callback=None):
     old_input = builtins.input
 
     def custom_input(prompt=""):
+        if _stop_requested:
+            raise KeyboardInterrupt("Execution stopped by user")
         if prompt and output_callback:
             try: output_callback.onOutput(str(prompt))
             except: pass
         if input_callback:
             try:
                 res = input_callback.onInputRequested(str(prompt))
+                if _stop_requested:
+                    raise KeyboardInterrupt("Execution stopped by user")
                 return str(res).rstrip('\r\n')
+            except KeyboardInterrupt:
+                raise
             except Exception:
                 return ""
         return ""
@@ -117,11 +171,19 @@ def run_code(code, output_callback=None, input_callback=None):
             exec(compile(tree, filename="<ast>", mode="exec"), agent_globals)
             
         return ""
+    except KeyboardInterrupt:
+        msg = "\n[STOPPED BY USER]\n"
+        if output_callback:
+            try: output_callback.onOutput(msg)
+            except: pass
+        return msg
     except Exception:
         err = traceback.format_exc()
         print(err) # Force error into the callback stream
         return err
     finally:
+        _active_thread_id = None
+        _stop_requested = False
         sys.stdout, sys.stderr = old_stdout, old_stderr
         sys.stdin = old_stdin
         builtins.input = old_input
