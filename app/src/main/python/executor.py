@@ -9,6 +9,11 @@ try:
     os.chdir('/storage/emulated/0')
 except:
     pass
+try:
+    import pip_manager
+    pip_manager.ensure_site_dir()
+except Exception:
+    pass
 
 import gc
 
