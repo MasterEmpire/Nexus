@@ -4,7 +4,8 @@ import android.content.Context
 import android.os.Environment
 import android.util.Log
 import dalvik.system.BaseDexClassLoader
-import dalvik.system.DexClassLoader
+import java.io.IOException
+import java.lang.reflect.Field
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -113,49 +114,135 @@ object SharedRuntimeLoader {
         return injectDex(context, internalDex)
     }
 
-    private fun injectDex(context: Context, dexFile: File): Boolean {
+    private val injectLock = Any()
+
+    private fun isDexAlreadyInPathList(appPathList: Any, dexElementsField: Field, dexFile: File): Boolean {
         return try {
-            dexFile.setReadOnly()
-
-            val appClassLoader = context.classLoader as? BaseDexClassLoader
-                ?: return false
-
-            val optDir = File(context.codeCacheDir, "opt_dex").apply { mkdirs() }
-            val tempLoader = DexClassLoader(
-                dexFile.absolutePath,
-                optDir.absolutePath,
-                null,
-                appClassLoader
-            )
-
-            val pathListField = BaseDexClassLoader::class.java.getDeclaredField("pathList").apply {
-                isAccessible = true
+            val elements = dexElementsField.get(appPathList) ?: return false
+            val len = Array.getLength(elements)
+            val targetName = dexFile.name
+            for (i in 0 until len) {
+                val elem = Array.get(elements, i) ?: continue
+                if (elem.toString().contains(targetName)) {
+                    return true
+                }
             }
-            val appPathList = pathListField.get(appClassLoader) ?: return false
-            val tempPathList = pathListField.get(tempLoader) ?: return false
-
-            val dexElementsField = appPathList.javaClass.getDeclaredField("dexElements").apply {
-                isAccessible = true
-            }
-
-            val origElements = dexElementsField.get(appPathList)
-            val newElements = dexElementsField.get(tempPathList)
-
-            val origLen = Array.getLength(origElements)
-            val newLen = Array.getLength(newElements)
-            val componentType = origElements.javaClass.componentType ?: return false
-
-            val combined = Array.newInstance(componentType, origLen + newLen)
-            System.arraycopy(origElements, 0, combined, 0, origLen)
-            System.arraycopy(newElements, 0, combined, origLen, newLen)
-
-            dexElementsField.set(appPathList, combined)
-            Log.d(TAG, "🎉 Successfully merged $newLen runtime dex elements into application PathClassLoader!")
-            true
-        } catch (t: Throwable) {
-            Log.e(TAG, "❌ Failed injecting DEX: ${t.message}", t)
-            CrashBootstrap.logHandledThrowable(context, TAG, t)
             false
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun makeElementsDirectly(
+        appPathList: Any,
+        appClassLoader: BaseDexClassLoader,
+        dexFile: File,
+        optDir: File
+    ): Any? {
+        val files = arrayListOf(dexFile)
+        val suppressed = ArrayList<IOException>()
+        val cls = appPathList.javaClass
+
+        try {
+            val m5 = cls.getDeclaredMethod(
+                "makeDexElements",
+                List::class.java,
+                File::class.java,
+                List::class.java,
+                ClassLoader::class.java,
+                java.lang.Boolean.TYPE
+            ).apply { isAccessible = true }
+            return m5.invoke(null, files, optDir, suppressed, appClassLoader, false)
+        } catch (_: NoSuchMethodException) {}
+
+        try {
+            val m4 = cls.getDeclaredMethod(
+                "makeDexElements",
+                List::class.java,
+                File::class.java,
+                List::class.java,
+                ClassLoader::class.java
+            ).apply { isAccessible = true }
+            return m4.invoke(null, files, optDir, suppressed, appClassLoader)
+        } catch (_: NoSuchMethodException) {}
+
+        try {
+            val m4Alt = cls.getDeclaredMethod(
+                "makeDexElements",
+                ArrayList::class.java,
+                File::class.java,
+                ArrayList::class.java,
+                ClassLoader::class.java
+            ).apply { isAccessible = true }
+            return m4Alt.invoke(null, files, optDir, suppressed, appClassLoader)
+        } catch (_: NoSuchMethodException) {}
+
+        val m3 = cls.getDeclaredMethod(
+            "makeDexElements",
+            ArrayList::class.java,
+            File::class.java,
+            ArrayList::class.java
+        ).apply { isAccessible = true }
+        return m3.invoke(null, files, optDir, suppressed)
+    }
+
+    private fun injectDex(context: Context, dexFile: File): Boolean {
+        synchronized(injectLock) {
+            if (isLoaded) return true
+            return try {
+                dexFile.setReadOnly()
+
+                val appClassLoader = context.classLoader as? BaseDexClassLoader
+                    ?: return false
+
+                val pathListField = BaseDexClassLoader::class.java.getDeclaredField("pathList").apply {
+                    isAccessible = true
+                }
+                val appPathList = pathListField.get(appClassLoader) ?: return false
+                val dexElementsField = appPathList.javaClass.getDeclaredField("dexElements").apply {
+                    isAccessible = true
+                }
+
+                if (isDexAlreadyInPathList(appPathList, dexElementsField, dexFile)) {
+                    Log.d(TAG, "✅ ${dexFile.name} already registered on PathClassLoader.")
+                    return true
+                }
+
+                try {
+                    val addDexPath = BaseDexClassLoader::class.java.getDeclaredMethod(
+                        "addDexPath",
+                        String::class.java
+                    ).apply { isAccessible = true }
+                    addDexPath.invoke(appClassLoader, dexFile.absolutePath)
+                    if (isDexAlreadyInPathList(appPathList, dexElementsField, dexFile)) {
+                        Log.d(TAG, "🎉 Registered ${dexFile.name} directly on PathClassLoader via addDexPath!")
+                        return true
+                    }
+                } catch (e: Throwable) {
+                    Log.w(TAG, "addDexPath unavailable (${e.message}), trying makeDexElements...")
+                }
+
+                val optDir = File(context.codeCacheDir, "opt_dex").apply { mkdirs() }
+                val newElements = makeElementsDirectly(appPathList, appClassLoader, dexFile, optDir)
+                    ?: return false
+
+                val origElements = dexElementsField.get(appPathList) ?: return false
+                val origLen = Array.getLength(origElements)
+                val newLen = Array.getLength(newElements)
+                val componentType = origElements.javaClass.componentType ?: return false
+
+                val combined = Array.newInstance(componentType, origLen + newLen)
+                System.arraycopy(origElements, 0, combined, 0, origLen)
+                System.arraycopy(newElements, 0, combined, origLen, newLen)
+
+                dexElementsField.set(appPathList, combined)
+                Log.d(TAG, "🎉 Successfully merged $newLen runtime dex elements directly into PathClassLoader!")
+                true
+            } catch (t: Throwable) {
+                Log.e(TAG, "❌ Failed injecting DEX: ${t.message}", t)
+                CrashBootstrap.logHandledThrowable(context, TAG, t)
+                false
+            }
         }
     }
 
