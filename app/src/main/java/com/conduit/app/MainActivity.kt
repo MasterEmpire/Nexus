@@ -91,8 +91,8 @@ class MainActivity : ComponentActivity() {
         viewModel.loadFolderCache(this)
         viewModel.initRecovery(cacheDir)
         viewModel.loadSettings(this)
-        
 
+        SharedRuntimeLoader.tryLoadExisting(this)
 
         // Request Storage Permissions
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -108,6 +108,18 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
+            var isReady by remember { androidx.compose.runtime.mutableStateOf(SharedRuntimeLoader.isLoaded) }
+            var loadingMsg by remember { androidx.compose.runtime.mutableStateOf("Loading shared runtime...") }
+
+            LaunchedEffect(Unit) {
+                if (!isReady) {
+                    val loaded = SharedRuntimeLoader.ensureLoaded(this@MainActivity) { status ->
+                        loadingMsg = status
+                    }
+                    isReady = loaded
+                }
+            }
+
             val conduitColorScheme = darkColorScheme(
                 primary = Color(0xFF00E5FF),
                 secondary = Color(0xFF7C4DFF),
@@ -117,7 +129,36 @@ class MainActivity : ComponentActivity() {
             )
             MaterialTheme(colorScheme = conduitColorScheme) {
                 Surface(color = MaterialTheme.colorScheme.background) {
-                    ConduitIDE(viewModel)
+                    if (isReady) {
+                        ConduitIDE(viewModel)
+                    } else {
+                        Box(
+                            modifier = androidx.compose.ui.Modifier.fillMaxSize(),
+                            contentAlignment = androidx.compose.ui.Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+                                verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
+                                modifier = androidx.compose.ui.Modifier.padding(24.dp)
+                            ) {
+                                CircularProgressIndicator(color = Color(0xFF00E5FF))
+                                Spacer(modifier = androidx.compose.ui.Modifier.height(16.dp))
+                                Text(
+                                    text = "Nexus Core Loading",
+                                    color = Color.White,
+                                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                                    fontSize = 16.sp
+                                )
+                                Spacer(modifier = androidx.compose.ui.Modifier.height(6.dp))
+                                Text(
+                                    text = loadingMsg,
+                                    color = Color.Gray,
+                                    fontSize = 12.sp,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
